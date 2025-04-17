@@ -20,6 +20,10 @@
 using std::placeholders::_1;
 
 class SemanticGridMapper : public rclcpp::Node {
+  private:
+    double decay_;
+    double log_odd_min_;
+    double log_odd_max_;
 public:
 
   std::map<std::string, std::array<uint8_t, 3>> class_to_color_;
@@ -31,6 +35,10 @@ public:
     this->declare_parameter("resolution", 0.1);
     this->declare_parameter("length", 20.0);
     this->declare_parameter("height", 20.0);
+    this->declare_parameter("decay", 0.1);
+    this->declare_parameter("log_odd_min", -3.14);
+    this->declare_parameter("log_odd_max", 3.14);
+
     this->declare_parameter<std::string>("frame_id", "odom");
     std::string frame_id = this->get_parameter("frame_id").as_string();
 
@@ -40,6 +48,10 @@ public:
     resolution_ = get_parameter("resolution").as_double();
     length_ = get_parameter("length").as_double();
     height_ = get_parameter("height").as_double();
+    decay_ = get_parameter("decay").as_double();
+    log_odd_min_ = get_parameter("log_odd_min").as_double();
+    log_odd_max_ = get_parameter("log_odd_max").as_double();
+
 
     class_names_ = {"tree", "dirt", "fence", "grass", "gravel", "log", "mud", "object", "other-terrain",
                     "rock", "sky", "structure", "tree-foliage", "tree-trunk", "water", "unlabeled",
@@ -107,12 +119,12 @@ private:
   double update_log_odds(double old_l, double meas_l) {
     // If new cell (not yet initialized, only new value)
     if (std::isnan(old_l)) {
-        return std::clamp(meas_l, -10.0, 10.0);
+        return std::clamp(meas_l, log_odd_min_, log_odd_max_);
     }
 
     // Update log-odds and clamp to range [-10, 10]
     double updated_l = old_l + meas_l;
-    return std::clamp(updated_l, -10.0, 10.0);
+    return std::clamp(updated_l, log_odd_min_, log_odd_max_);
 }
 
   float packRGB(uint8_t r, uint8_t g, uint8_t b) {
@@ -125,6 +137,16 @@ private:
   }
 
   void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+
+    // Apply exponential decay to all classes
+    for (auto& name : class_names_) {
+      for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
+        float& val = map_.at(name, *it);
+        if (!std::isnan(val)) {
+          val = update_log_odds(val, prob_to_log_odds(0.5 - decay_));
+        }
+      }
+    }
 
     // Move the whole map with the robot
     geometry_msgs::msg::TransformStamped transform;
@@ -167,13 +189,21 @@ private:
       grid_map::Index idx;
       map_.getIndex(pos, idx);
 
+      float certainty_threshold = 1.0;
+
       for (const auto& name : class_names_) {
         if (name == cls) {
           double old_log = map_.at(name, idx);
           map_.at(name, idx) = update_log_odds(old_log, prob_to_log_odds(0.7));
-          const auto& rgb = class_to_color_[name];
-          map_.at(name + "_rgb", idx) = packRGB(rgb[0], rgb[1], rgb[2]);
-          //RCLCPP_INFO(this->get_logger(), "Updated Value: %f, Class: %s", map_.at(name, idx), name.c_str());
+          if(map_.at(name, idx) > certainty_threshold)
+          {
+            const auto& rgb = class_to_color_[name];
+            map_.at(name + "_rgb", idx) = packRGB(rgb[0], rgb[1], rgb[2]);
+          }
+          else {
+            map_.at(name + "_rgb", idx) = std::numeric_limits<float>::quiet_NaN();;
+          }
+          RCLCPP_INFO(this->get_logger(), "Updated Value: %f, Class: %s", map_.at(name, idx), name.c_str());
           //RCLCPP_INFO(this->get_logger(), "Updated Value: %f, Class: %s, Meas: %f", map_.at(name, idx), name.c_str(), prob_to_log_odds(0.7));
         }
       }
