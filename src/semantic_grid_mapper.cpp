@@ -21,9 +21,10 @@ using std::placeholders::_1;
 
 class SemanticGridMapper : public rclcpp::Node {
   private:
-    double decay_;
     double log_odd_min_;
     double log_odd_max_;
+    std::string input_topic_;
+    std::string grid_map_topic_;
 public:
 
   std::map<std::string, std::array<uint8_t, 3>> class_to_color_;
@@ -35,25 +36,29 @@ public:
     this->declare_parameter("resolution", 0.1);
     this->declare_parameter("length", 20.0);
     this->declare_parameter("height", 20.0);
-    this->declare_parameter("decay", 0.1);
     this->declare_parameter("log_odd_min", -3.14);
     this->declare_parameter("log_odd_max", 3.14);
+    this->declare_parameter("input_topic", "/rgb_cloud");
+    this->declare_parameter("grid_map_topic", "semantic_grid_map");
+
 
     this->declare_parameter<std::string>("frame_id", "odom");
     std::string frame_id = this->get_parameter("frame_id").as_string();
 
     bool use_sim_time = this->get_parameter("use_sim_time").as_bool();
-    this->set_parameter(rclcpp::Parameter("use_sim_time", true));
+    this->set_parameter(rclcpp::Parameter("use_sim_time", use_sim_time));
 
     resolution_ = get_parameter("resolution").as_double();
     length_ = get_parameter("length").as_double();
     height_ = get_parameter("height").as_double();
-    decay_ = get_parameter("decay").as_double();
     log_odd_min_ = get_parameter("log_odd_min").as_double();
     log_odd_max_ = get_parameter("log_odd_max").as_double();
+    input_topic_ = get_parameter("input_topic").as_string();
+    grid_map_topic_ = get_parameter("grid_map_topic").as_string();
 
 
-    class_names_ = {"tree", "dirt", "fence", "grass", "gravel", "log", "mud", "object", "other-terrain",
+
+    class_names_ = {"bush", "dirt", "fence", "grass", "gravel", "log", "mud", "object", "other-terrain",
                     "rock", "sky", "structure", "tree-foliage", "tree-trunk", "water", "unlabeled",
                     "unlabeled", "unlabeled", "unlabeled"};
 
@@ -84,15 +89,33 @@ public:
         class_to_color_[pair.second] = {std::get<0>(rgb_tuple), std::get<1>(rgb_tuple), std::get<2>(rgb_tuple)};
     }
 
+    // Probabilistic layer for each class (log odd format)
     map_ = grid_map::GridMap(class_names_);
+
+    // Visualizatin layer for each class
     for(auto name : class_names_)
     {
       map_.add(name + "_rgb");
     }
+
+    // Hit count layer for each class
+    for(auto name : class_names_)
+    {
+      map_.add(name + "_hit");
+    }
+
+    // Probalility layers (% format 0..1)
+    for(auto name : class_names_)
+    {
+      map_.add(name + "_prob");
+    }
+
+    // Visualization layer which combines all classes
     map_.add("dominant_class");
+
+    // Initialize the map
     map_.setGeometry(grid_map::Length(length_, height_), resolution_, grid_map::Position(0.0, 0.0));
     map_.setFrameId(frame_id);
-
 
     for (const auto& name : class_names_) {
       map_[name].setConstant(0.0); // log-odds 0 => p = 0.5
@@ -100,9 +123,9 @@ public:
     map_["dominant_class"].setConstant(-1.0);
 
     cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-      "/rgb_cloud", 10, std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
+      input_topic_, 0, std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
 
-    grid_map_pub_ = create_publisher<grid_map_msgs::msg::GridMap>("semantic_grid_map", 10);
+    grid_map_pub_ = create_publisher<grid_map_msgs::msg::GridMap>(grid_map_topic_, 10);
 
     RCLCPP_INFO(this->get_logger(), "Semantic Grid Mapper initialized.");
   }
@@ -138,16 +161,6 @@ private:
 
   void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
 
-    // Apply exponential decay to all classes
-    for (auto& name : class_names_) {
-      for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
-        float& val = map_.at(name, *it);
-        if (!std::isnan(val)) {
-          val = update_log_odds(val, prob_to_log_odds(0.5 - decay_));
-        }
-      }
-    }
-
     // Move the whole map with the robot
     geometry_msgs::msg::TransformStamped transform;
     try {
@@ -174,7 +187,13 @@ private:
     Eigen::Affine3d eigen_transform = tf2::transformToEigen(transform.transform);
     pcl::transformPointCloud(pcl_cloud, transformed_cloud, eigen_transform);
 
-    // Process Points
+    // Reset Hit Counts
+    for(auto name : class_names_)
+    {
+      map_[name + "_hit"].setConstant(0.0);
+    }
+
+    // Update hit count
     for (const auto& point : transformed_cloud.points) {
       std::tuple<uint8_t, uint8_t, uint8_t> color{point.r, point.g, point.b};
       if (color_to_class_.count(color) == 0) continue;
@@ -189,51 +208,75 @@ private:
       grid_map::Index idx;
       map_.getIndex(pos, idx);
 
-      float certainty_threshold = 1.0;
+      map_.at(cls + "_hit", idx) += 1.0;
+    }
 
-      for (const auto& name : class_names_) {
-        if (name == cls) {
-          double old_log = map_.at(name, idx);
-          map_.at(name, idx) = update_log_odds(old_log, prob_to_log_odds(0.7));
-          if(map_.at(name, idx) > certainty_threshold)
-          {
-            const auto& rgb = class_to_color_[name];
-            map_.at(name + "_rgb", idx) = packRGB(rgb[0], rgb[1], rgb[2]);
-          }
-          else {
-            map_.at(name + "_rgb", idx) = std::numeric_limits<float>::quiet_NaN();;
-          }
-          RCLCPP_INFO(this->get_logger(), "Updated Value: %f, Class: %s", map_.at(name, idx), name.c_str());
-          //RCLCPP_INFO(this->get_logger(), "Updated Value: %f, Class: %s, Meas: %f", map_.at(name, idx), name.c_str(), prob_to_log_odds(0.7));
+    // Reset probabilities
+    for(auto name : class_names_)
+    {
+      map_[name + "_prob"].setConstant(0.0);
+    }
+
+    // Calculate class probabilities
+    for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
+      grid_map::Index index = *it;
+    
+      float total_hits = 0.0;
+    
+      // Calculate the total hits across all classes at this cell
+      for (const auto& class_name : class_names_) {
+        if (map_.isValid(index, class_name + "_hit")) {
+          total_hits += map_.at(class_name + "_hit", index);
         }
+      }
+    
+      // Calculate normalized probabilities and store them
+      for (const auto& class_name : class_names_) {
+    
+        float hit_count = 0.0;
+        if (map_.isValid(index, class_name + "_hit")) {
+          hit_count = map_.at(class_name + "_hit", index);
+        }
+    
+        float prob = (total_hits > 0.0) ? (hit_count / total_hits) : 0.0;
+        map_.at(class_name + "_prob", index) = prob;
       }
     }
 
+    
     for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
-      double max_prob = 0.0;
-      int max_class = -1;
+      grid_map::Index index = *it;
 
-      for (size_t i = 0; i < class_names_.size(); ++i) {
-        double log_val = map_.at(class_names_[i], *it);
-        double prob = log_odds_to_prob(log_val);
-        if (prob > max_prob) {
-          max_prob = prob;
-          max_class = static_cast<int>(i);
+      std::array<unsigned char, 3> max_class_rgb;
+      double max_log_odd = log_odd_min_;
+      
+      for (const auto& class_name : class_names_) {
+        // Update the historical probabilities
+        auto& val = map_.at(class_name, index);
+        val = update_log_odds(val, prob_to_log_odds(map_.at(class_name + "_prob", index)));
+
+        // Calculate the rgb visualizatin for the class layers
+        const auto& rgb = class_to_color_[class_name];
+        if(val > 0)
+        {
+          map_.at(class_name + "_rgb", index) = packRGB(rgb[0], rgb[1], rgb[2]);
+        }
+        else {
+          map_.at(class_name + "_rgb", index) = std::numeric_limits<float>::quiet_NaN();;
+        }
+
+        // Store the most dominant class
+        if(val > max_log_odd)
+        {
+          max_log_odd = val;
+          max_class_rgb = rgb;
         }
       }
 
-      //RCLCPP_INFO(this->get_logger(), "Max Class: %i", max_class);
-
-      if (max_class >= 0) {
-        // Get the RGB color from class index
-        const auto& class_name = class_names_[max_class];
-        const auto& rgb = class_to_color_[class_name];
-    
-        // Pack RGB into a float for RViz visualization
-        float rgb_float = packRGB(rgb[0], rgb[1], rgb[2]);
-    
-        map_.at("dominant_class", *it) = rgb_float;
-        //RCLCPP_INFO(this->get_logger(), "RGB: %f", rgb_float);
+      // Set the dominent class rgb
+      if(max_log_odd > 0)
+      {
+        map_.at("dominant_class", index) = packRGB(max_class_rgb[0], max_class_rgb[1], max_class_rgb[2]);
       }
     }
 
