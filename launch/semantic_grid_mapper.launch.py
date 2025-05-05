@@ -9,6 +9,6 @@ def generate_launch_description():
             executable='semantic_grid_mapper',
             name='semantic_grid_mapper_node',
             output='screen',
-            parameters=['/home/lukas/ros2_ws/src/semantic_grid_mapper/config/grid_mapper_params.yaml']
+            parameters=['/home/robolab/ros2_ws/src/semantic_grid_mapper/config/grid_mapper_params.yaml']
         )
     ])

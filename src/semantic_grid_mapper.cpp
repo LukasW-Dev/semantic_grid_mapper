@@ -114,6 +114,15 @@ public:
       map_.add(name + "_prob");
     }
 
+    // Independent Layer for each class. The above probabilities have cross-class dependencies. 
+    // For example if a cell has a high probability to be tree-foliage, the probability for tree-trunk is low
+    // even though there might be hits in the cell. This is a problem if we wan't to extract the info whether there is a tree trunk because
+    // the info could get lost due to many hits for tree-foliage.
+    for (auto name : class_names_) {
+      map_.add(name + "_idp");
+      map_[name + "_idp"].setConstant(0.0);
+    }
+
     // Visualization layer which combines all classes
     map_.add("dominant_class");
 
@@ -244,6 +253,36 @@ private:
         float prob = (total_hits > 0.0) ? (hit_count / total_hits) : 0.0;
         map_.at(class_name + "_prob", index) = prob;
       }
+
+      // Calculate independent probabilies
+      for (const auto &class_name : class_names_) {
+
+        // Decrease the indepentend representation for each class each update a bit for clearance
+        auto& val = map_.at(class_name + "_idp", index);
+        val -= 0.3;
+        if(val < -1)
+          val = -1;
+        
+
+        float hit_count = 0.0;
+        if (map_.isValid(index, class_name + "_hit")) {
+          hit_count = map_.at(class_name + "_hit", index);
+        }
+        
+        if (std::isnan(val)) {
+          val = 0.0;
+        }
+
+        val += hit_count;
+
+        // Calculate the rgb visualizatin for the class layers
+        const auto &rgb = class_to_color_[class_name];
+        if (val > 0) {
+          map_.at(class_name + "_rgb", index) = packRGB(rgb[0], rgb[1], rgb[2]);
+        } else {
+          map_.at(class_name + "_rgb", index) = std::numeric_limits<float>::quiet_NaN();
+        }
+      }
     }
 
     for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
@@ -260,13 +299,13 @@ private:
 
         // Calculate the rgb visualizatin for the class layers
         const auto &rgb = class_to_color_[class_name];
-        if (val > 0) {
-          map_.at(class_name + "_rgb", index) = packRGB(rgb[0], rgb[1], rgb[2]);
-        } else {
-          map_.at(class_name + "_rgb", index) =
-              std::numeric_limits<float>::quiet_NaN();
-          ;
-        }
+        // if (val > 0) {
+        //   map_.at(class_name + "_rgb", index) = packRGB(rgb[0], rgb[1], rgb[2]);
+        // } else {
+        //   map_.at(class_name + "_rgb", index) =
+        //       std::numeric_limits<float>::quiet_NaN();
+        //   ;
+        // }
 
         // Store the most dominant class
         if (val > max_log_odd) {
