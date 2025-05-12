@@ -1,7 +1,10 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
+import os
 
 def generate_launch_description():
+    
+    config_path = os.path.expanduser('~/ros2_ws/src/semantic_grid_mapper/config/grid_mapper_params.yaml')
 
     return LaunchDescription([
         Node(
@@ -9,6 +12,6 @@ def generate_launch_description():
             executable='semantic_grid_mapper',
             name='semantic_grid_mapper_node',
             output='screen',
-            parameters=['/home/robolab/ros2_ws/src/semantic_grid_mapper/config/grid_mapper_params.yaml']
+            parameters=[config_path],
         )
     ])
