@@ -192,11 +192,11 @@ private:
     }
 
     // Create PCL Cloud
-    pcl::PointCloud<pcl::PointXYZRGB> pcl_cloud;
+    pcl::PointCloud<pcl::PointXYZRGBL> pcl_cloud;
     pcl::fromROSMsg(*msg, pcl_cloud);
 
     // Transform the points into map frame
-    pcl::PointCloud<pcl::PointXYZRGB> transformed_cloud;
+    pcl::PointCloud<pcl::PointXYZRGBL> transformed_cloud;
     Eigen::Affine3d eigen_transform =
         tf2::transformToEigen(transform.transform);
     pcl::transformPointCloud(pcl_cloud, transformed_cloud, eigen_transform);
@@ -211,7 +211,15 @@ private:
       std::tuple<uint8_t, uint8_t, uint8_t> color{point.r, point.g, point.b};
       if (color_to_class_.count(color) == 0)
         continue;
+
+      // Reject points with low confidence (TODO: should this be done already in fusion?)
+      if (point.label < 70 ) {
+        continue;
+      }
+      
       std::string cls = color_to_class_[color];
+
+      // RCLCPP_WARN(this->get_logger(), "Class: %s, Conf: %d", cls.c_str(), point.label);
 
       grid_map::Position pos(point.x, point.y);
       if (!map_.isInside(pos)) {
