@@ -114,6 +114,11 @@ public:
       map_.add(name + "_prob");
     }
 
+    // Probalility layers (% format 0..1)
+    for (auto name : class_names_) {
+      map_.add(name + "_prob");
+    }
+
     // Independent Layer for each class. The above probabilities have cross-class dependencies. 
     // For example if a cell has a high probability to be tree-foliage, the probability for tree-trunk is low
     // even though there might be hits in the cell. This is a problem if we wan't to extract the info whether there is a tree trunk because
@@ -177,7 +182,7 @@ private:
     // Move the whole map with the robot
     geometry_msgs::msg::TransformStamped transform;
     try {
-      transform = tf_buffer_.lookupTransform("odom", msg->header.frame_id,
+      transform = tf_buffer_.lookupTransform(frame_id_, msg->header.frame_id,
                                              tf2::TimePointZero);
 
       double robot_x = transform.transform.translation.x;

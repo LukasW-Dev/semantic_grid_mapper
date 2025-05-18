@@ -1,11 +1,11 @@
 semantic_grid_mapper_node:
   ros__parameters:
     resolution: 0.1
-    length: 15.0
-    height: 15.0
+    length: 14.0
+    height: 14.0
     log_odd_min: -100.0
     log_odd_max: 100.0
-    frame_id: "odom"
+    frame_id: "map"
     use_sim_time: true
     input_topic: "/rgb_cloud"
     grid_map_topic: "semantic_grid_map"
