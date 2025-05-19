@@ -16,6 +16,25 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
+#include <functional> // for std::hash
+
+namespace std {
+template <>
+struct hash<grid_map::Index> {
+  std::size_t operator()(const grid_map::Index& idx) const noexcept {
+    // Combine the two ints into a hash
+    return std::hash<int>()(idx.x()) ^ (std::hash<int>()(idx.y()) << 1);
+  }
+};
+
+template <>
+struct equal_to<grid_map::Index> {
+  bool operator()(const grid_map::Index& a, const grid_map::Index& b) const noexcept {
+    return a.x() == b.x() && a.y() == b.y();
+  }
+};
+}
+
 using std::placeholders::_1;
 
 class SemanticGridMapper : public rclcpp::Node {
@@ -187,13 +206,16 @@ private:
 
       double robot_x = transform.transform.translation.x;
       double robot_y = transform.transform.translation.y;
-      // RCLCPP_INFO(this->get_logger(), "Robot Position: (%f, %f)", robot_x,
-      // robot_y);
-
       map_.move(grid_map::Position(robot_x, robot_y));
     } catch (const tf2::TransformException &ex) {
       RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
       return;
+    }
+
+    // Initialize min height layer only once
+    if (!map_.exists("min_height")) {
+      map_.add("min_height");
+      map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
     }
 
     // Create PCL Cloud
@@ -211,9 +233,11 @@ private:
       map_[name + "_hit"].setConstant(0.0);
     }
 
-    // Update hit count
+    // Point Iteration
     for (const auto &point : transformed_cloud.points) {
       std::tuple<uint8_t, uint8_t, uint8_t> color{point.r, point.g, point.b};
+      
+      // Reject points with no color (should actually not happen)
       if (color_to_class_.count(color) == 0)
         continue;
 
@@ -221,19 +245,23 @@ private:
       if (point.label < 70 ) {
         continue;
       }
-      
-      std::string cls = color_to_class_[color];
 
-      // RCLCPP_WARN(this->get_logger(), "Class: %s, Conf: %d", cls.c_str(), point.label);
-
+      // Check if the point is inside the map
       grid_map::Position pos(point.x, point.y);
       if (!map_.isInside(pos)) {
         continue;
       }
 
+      // Update the min height layer
       grid_map::Index idx;
       map_.getIndex(pos, idx);
-
+      float min_height = map_.at("min_height", idx);
+      if (std::isnan(min_height) || point.z < min_height) {
+        map_.at("min_height", idx) = point.z;
+      }
+      
+      // Update class hit count
+      std::string cls = color_to_class_[color];
       map_.at(cls + "_hit", idx) += 1.0;
     }
 
@@ -242,88 +270,72 @@ private:
       map_[name + "_prob"].setConstant(0.0);
     }
 
-    // Calculate class probabilities
+    // Map Iteration 1
     for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
       grid_map::Index index = *it;
 
-      float total_hits = 0.0;
-
       // Calculate the total hits across all classes at this cell
+      float total_hits = 0.0;
       for (const auto &class_name : class_names_) {
         if (map_.isValid(index, class_name + "_hit")) {
           total_hits += map_.at(class_name + "_hit", index);
         }
       }
 
-      // Calculate normalized probabilities and store them
-      for (const auto &class_name : class_names_) {
-
-        float hit_count = 0.0;
-        if (map_.isValid(index, class_name + "_hit")) {
-          hit_count = map_.at(class_name + "_hit", index);
-        }
-
-        float prob = (total_hits > 0.0) ? (hit_count / total_hits) : 0.0;
-        map_.at(class_name + "_prob", index) = prob;
-      }
-
-      // Calculate independent probabilies
-      for (const auto &class_name : class_names_) {
-
-        // Decrease the indepentend representation for each class each update a bit for clearance
-        auto& val = map_.at(class_name + "_idp", index);
-        val -= 0.3;
-        if(val < -1)
-          val = -1;
-        
-
-        float hit_count = 0.0;
-        if (map_.isValid(index, class_name + "_hit")) {
-          hit_count = map_.at(class_name + "_hit", index);
-        }
-        
-        if (std::isnan(val)) {
-          val = 0.0;
-        }
-
-        val += hit_count;
-
-        // Calculate the rgb visualizatin for the class layers
-        const auto &rgb = class_to_color_[class_name];
-        if (val > 0) {
-          map_.at(class_name + "_rgb", index) = packRGB(rgb[0], rgb[1], rgb[2]);
-        } else {
-          map_.at(class_name + "_rgb", index) = std::numeric_limits<float>::quiet_NaN();
-        }
-      }
-    }
-
-    for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
-      grid_map::Index index = *it;
-
+      // needed for log odd calculation
       std::array<unsigned char, 3> max_class_rgb;
       double max_log_odd = log_odd_min_;
 
+      // Calculate normalized probabilities and store them
       for (const auto &class_name : class_names_) {
+        float hit_count = 0.0;
+        if (map_.isValid(index, class_name + "_hit")) {
+          hit_count = map_.at(class_name + "_hit", index);
+        }
+        float prob = (total_hits > 0.0) ? (hit_count / total_hits) : 0.0;
+        map_.at(class_name + "_prob", index) = prob;
+
+        // Decrease the indepentend representation for each class each update a bit for clearance
+        // TODO: Find better way to do this
+        {
+          auto& val = map_.at(class_name + "_idp", index);
+          val -= 0.3;
+          if(val < -1)
+          {
+            val = -1;
+          }
+          float hit_count = 0.0;
+          if (map_.isValid(index, class_name + "_hit")) {
+            hit_count = map_.at(class_name + "_hit", index);
+          }
+          if (std::isnan(val)) {
+            val = 0.0;
+          }
+          val += hit_count;
+
+          // Calculate the rgb visualizatin for the class layers
+          const auto &rgb = class_to_color_[class_name];
+          if (val > 0) {
+            map_.at(class_name + "_rgb", index) = packRGB(rgb[0], rgb[1], rgb[2]);
+          } else {
+            map_.at(class_name + "_rgb", index) = std::numeric_limits<float>::quiet_NaN();
+          }
+        }
+
         // Update the historical probabilities
-        auto &val = map_.at(class_name, index);
-        val = update_log_odds(
-            val, prob_to_log_odds(map_.at(class_name + "_prob", index)));
+        {
+          auto &val = map_.at(class_name, index);
+          val = update_log_odds(
+              val, prob_to_log_odds(map_.at(class_name + "_prob", index)));
 
-        // Calculate the rgb visualizatin for the class layers
-        const auto &rgb = class_to_color_[class_name];
-        // if (val > 0) {
-        //   map_.at(class_name + "_rgb", index) = packRGB(rgb[0], rgb[1], rgb[2]);
-        // } else {
-        //   map_.at(class_name + "_rgb", index) =
-        //       std::numeric_limits<float>::quiet_NaN();
-        //   ;
-        // }
+          // Calculate the rgb visualizatin for the class layers
+          const auto &rgb = class_to_color_[class_name];
 
-        // Store the most dominant class
-        if (val > max_log_odd) {
-          max_log_odd = val;
-          max_class_rgb = rgb;
+          // Store the most dominant class
+          if (val > max_log_odd) {
+            max_log_odd = val;
+            max_class_rgb = rgb;
+          }
         }
       }
 
