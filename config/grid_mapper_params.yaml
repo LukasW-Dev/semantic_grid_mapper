@@ -9,5 +9,7 @@ semantic_grid_mapper_node:
     use_sim_time: true
     input_topic: "/rgb_cloud"
     grid_map_topic: "semantic_grid_map"
+    robot_height: 1.2
+    max_veg_height: 0.4
 
     

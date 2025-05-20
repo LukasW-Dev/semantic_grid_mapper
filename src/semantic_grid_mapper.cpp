@@ -45,6 +45,10 @@ private:
   double resolution_;
   double length_;
   double height_;
+
+  double robot_height_;
+  double max_veg_height_;
+
   std::string input_topic_;
   std::string grid_map_topic_;
   std::string frame_id_;
@@ -76,12 +80,18 @@ public:
     this->declare_parameter<std::string>("grid_map_topic");
     this->declare_parameter<std::string>("frame_id");
 
+    this->declare_parameter<double>("robot_height");
+    this->declare_parameter<double>("max_veg_height");
+
     // Retrieve and store parameter values
     this->get_parameter("resolution", resolution_);
     this->get_parameter("length", length_);
     this->get_parameter("height", height_);
     this->get_parameter("log_odd_min", log_odd_min_);
     this->get_parameter("log_odd_max", log_odd_max_);
+
+    this->get_parameter("robot_height", robot_height_);
+    this->get_parameter("max_veg_height", max_veg_height_);
 
     this->get_parameter("input_topic", input_topic_);
     this->get_parameter("grid_map_topic", grid_map_topic_);
@@ -218,6 +228,19 @@ private:
       map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
     }
 
+    // Initialize vegetation zone layer only once
+    if (!map_.exists("vegetation_zone")) {
+      map_.add("vegetation_zone");
+      map_["vegetation_zone"].setConstant(std::numeric_limits<float>::quiet_NaN());
+    }
+
+    // Initialize obstacle zone layer only once
+    if (!map_.exists("obstacle_zone")) {
+      map_.add("obstacle_zone");
+      map_["obstacle_zone"].setConstant(std::numeric_limits<float>::quiet_NaN());
+    }
+
+
     // Create PCL Cloud
     pcl::PointCloud<pcl::PointXYZRGBL> pcl_cloud;
     pcl::fromROSMsg(*msg, pcl_cloud);
@@ -245,7 +268,7 @@ private:
       if (point.label < 70 ) {
         continue;
       }
-
+      
       // Check if the point is inside the map
       grid_map::Position pos(point.x, point.y);
       if (!map_.isInside(pos)) {
@@ -263,6 +286,23 @@ private:
       // Update class hit count
       std::string cls = color_to_class_[color];
       map_.at(cls + "_hit", idx) += 1.0;
+
+      
+      // Update vegetation zone layer
+      if (!std::isnan(min_height)) {
+        if (cls == "tree-foliage" || cls == "tree-trunk") {
+          //RCLCPP_INFO(this->get_logger(), "z %f, min_height %f, max_veg_height %f, robot_height %f", point.z, min_height, max_veg_height_, robot_height_);
+
+          if (point.z > (min_height + max_veg_height_) 
+          && point.z < (min_height + robot_height_)) {
+            if (std::isnan(map_.at("obstacle_zone", idx))) {
+              map_.at("obstacle_zone", idx) = 0.0;
+            }
+            map_.at("obstacle_zone", idx) += 1.0;
+            RCLCPP_INFO(this->get_logger(), "obstacle zone: %f", point.z);
+          }
+        }
+      }
     }
 
     // Reset probabilities
@@ -337,6 +377,11 @@ private:
             max_class_rgb = rgb;
           }
         }
+      }
+
+      // Set obstacle zone to nan if less than 10
+      if (map_.at("obstacle_zone", index) < 10.0) {
+        map_.at("obstacle_zone", index) = std::numeric_limits<float>::quiet_NaN();
       }
 
       // Set the dominent class rgb
