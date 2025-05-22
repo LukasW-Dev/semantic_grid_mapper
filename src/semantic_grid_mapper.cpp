@@ -51,11 +51,16 @@ private:
   double robot_height_;
   double max_veg_height_;
 
-  std::string input_topic_;
+  std::string semantic_pointcloud_topic_;
+  std::string pointcloud_topic1_;
+  std::string pointcloud_topic2_;
   std::string grid_map_topic_;
-  std::string frame_id_;
+  std::string map_frame_id_;
+  std::string robot_base_frame_id_;
 
-  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr semantic_cloud_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub1_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub2_;
   rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr grid_map_pub_;
 
   grid_map::GridMap map_;
@@ -78,9 +83,12 @@ public:
     this->declare_parameter<double>("log_odd_min");
     this->declare_parameter<double>("log_odd_max");
 
-    this->declare_parameter<std::string>("input_topic");
+    this->declare_parameter<std::string>("semantic_pointcloud_topic");
+    this->declare_parameter<std::string>("pointcloud_topic1");
+    this->declare_parameter<std::string>("pointcloud_topic2");
     this->declare_parameter<std::string>("grid_map_topic");
-    this->declare_parameter<std::string>("frame_id");
+    this->declare_parameter<std::string>("map_frame_id");
+    this->declare_parameter<std::string>("robot_base_frame_id");
 
     this->declare_parameter<double>("robot_height");
     this->declare_parameter<double>("max_veg_height");
@@ -95,9 +103,13 @@ public:
     this->get_parameter("robot_height", robot_height_);
     this->get_parameter("max_veg_height", max_veg_height_);
 
-    this->get_parameter("input_topic", input_topic_);
+    this->get_parameter("semantic_pointcloud_topic", semantic_pointcloud_topic_);
+    this->get_parameter("pointcloud_topic1", pointcloud_topic1_);
+    this->get_parameter("pointcloud_topic2", pointcloud_topic2_);
     this->get_parameter("grid_map_topic", grid_map_topic_);
-    this->get_parameter("frame_id", frame_id_);
+    this->get_parameter("map_frame_id", map_frame_id_);
+    this->get_parameter("robot_base_frame_id", robot_base_frame_id_);
+
 
     this->get_parameter("use_sim_time", use_sim_time_);
     this->set_parameter(rclcpp::Parameter("use_sim_time", use_sim_time_));
@@ -165,15 +177,23 @@ public:
     // Initialize the map
     map_.setGeometry(grid_map::Length(length_, height_), resolution_,
                      grid_map::Position(0.0, 0.0));
-    map_.setFrameId(frame_id_);
+    map_.setFrameId(map_frame_id_);
 
     for (const auto &name : class_names_) {
       map_[name].setConstant(0.0); // log-odds 0 => p = 0.5
     }
     map_["dominant_class"].setConstant(-1.0);
 
-    cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-        input_topic_, 0,
+    semantic_cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+        semantic_pointcloud_topic_, 0,
+        std::bind(&SemanticGridMapper::semanticPointCloudCallback, this, _1));
+
+    pointcloud_sub1_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+        pointcloud_topic1_, 0,
+        std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
+
+    pointcloud_sub2_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+        pointcloud_topic2_, 0,
         std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
 
     grid_map_pub_ =
@@ -210,10 +230,69 @@ private:
 
   void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
 
+    // Initialize min height layer only once
+    if (!map_.exists("min_height")) {
+      map_.add("min_height");
+      map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
+    }
+
+    // Move the whole map with the robot
+    geometry_msgs::msg::TransformStamped robot_transform;
+    try {
+      robot_transform = tf_buffer_.lookupTransform(map_frame_id_, robot_base_frame_id_, tf2::TimePointZero);
+
+      double robot_x = robot_transform.transform.translation.x;
+      double robot_y = robot_transform.transform.translation.y;
+      map_.move(grid_map::Position(robot_x, robot_y));
+    } catch (const tf2::TransformException &ex) {
+      RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
+      return;
+    }
+
+    // Get transform from msg frame to map frame
+    geometry_msgs::msg::TransformStamped pc_transform;
+    try {
+      pc_transform = tf_buffer_.lookupTransform(map_frame_id_, msg->header.frame_id,
+                                               tf2::TimePointZero);
+    } catch (const tf2::TransformException &ex) {
+      RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
+      return;
+    }
+
+    // Create PCL Cloud
+    pcl::PointCloud<pcl::PointXYZ> pcl_cloud;
+    pcl::fromROSMsg(*msg, pcl_cloud);
+
+    // Transform the points into map frame
+    pcl::PointCloud<pcl::PointXYZ> transformed_cloud;
+    Eigen::Affine3d eigen_transform = tf2::transformToEigen(pc_transform.transform);
+    pcl::transformPointCloud(pcl_cloud, transformed_cloud, eigen_transform);
+
+    // Point Iteration
+    for (const auto &point : transformed_cloud.points) {
+
+      // Check if the point is inside the map
+      grid_map::Position pos(point.x, point.y);
+      if (!map_.isInside(pos)) {
+        continue;
+      }
+
+      // Update the min height layer
+      grid_map::Index idx;
+      map_.getIndex(pos, idx);
+      float min_height = map_.at("min_height", idx);
+      if (std::isnan(min_height) || point.z < min_height) {
+        map_.at("min_height", idx) = point.z;
+      }
+    }
+  }
+
+  void semanticPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+
     // Move the whole map with the robot
     geometry_msgs::msg::TransformStamped transform;
     try {
-      transform = tf_buffer_.lookupTransform(frame_id_, msg->header.frame_id,
+      transform = tf_buffer_.lookupTransform(map_frame_id_, msg->header.frame_id,
                                              tf2::TimePointZero);
 
       double robot_x = transform.transform.translation.x;

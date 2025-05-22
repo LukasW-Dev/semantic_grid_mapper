@@ -5,10 +5,13 @@ semantic_grid_mapper_node:
     height: 14.0
     log_odd_min: -100.0
     log_odd_max: 100.0
-    frame_id: "map"
+    map_frame_id: "map"
     use_sim_time: true
-    input_topic: "/rgb_cloud"
+    semantic_pointcloud_topic: "/rgb_cloud"
+    pointcloud_topic1: "/left_laser/pandar"
+    pointcloud_topic2: "/right_laser/pandar"
     grid_map_topic: "semantic_grid_map"
+    robot_base_frame_id: "base_footprint"
     robot_height: 1.2
     max_veg_height: 0.4
 
