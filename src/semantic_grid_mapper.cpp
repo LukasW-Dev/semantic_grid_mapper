@@ -16,6 +16,8 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
+#include "cluster.cpp"
+
 #include <functional> // for std::hash
 
 namespace std {
@@ -299,7 +301,7 @@ private:
               map_.at("obstacle_zone", idx) = 0.0;
             }
             map_.at("obstacle_zone", idx) += 1.0;
-            RCLCPP_INFO(this->get_logger(), "obstacle zone: %f", point.z);
+            // RCLCPP_INFO(this->get_logger(), "obstacle zone: %f", point.z);
           }
         }
       }
@@ -384,12 +386,35 @@ private:
         map_.at("obstacle_zone", index) = std::numeric_limits<float>::quiet_NaN();
       }
 
+      
       // Set the dominent class rgb
       if (max_log_odd > 0) {
         map_.at("dominant_class", index) =
-            packRGB(max_class_rgb[0], max_class_rgb[1], max_class_rgb[2]);
+        packRGB(max_class_rgb[0], max_class_rgb[1], max_class_rgb[2]);
       }
     }
+
+    // Fill the obstacle zone
+    std::string obstacle_zone = "obstacle_zone";
+
+    // Print amount of points in the obstacle zone
+    int count = 0;
+    for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
+      grid_map::Index index = *it;
+      if (map_.at(obstacle_zone, index) > 0.0) {
+        count++;
+      }
+    }
+    RCLCPP_INFO(this->get_logger(), "obstacle zone coun before t: %d", count);
+    markAlphaShapeObstacleClusters(map_, obstacle_zone, 20);
+    count = 0;
+    for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
+      grid_map::Index index = *it;
+      if (map_.at(obstacle_zone, index) > 0.0) {
+        count++;
+      }
+    }
+    RCLCPP_INFO(this->get_logger(), "obstacle zone coun after t: %d", count);
 
     grid_map_msgs::msg::GridMap map_msg;
     map_msg = *grid_map::GridMapRosConverter::toMessage(map_);

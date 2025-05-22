@@ -22,10 +22,13 @@ find_package(tf2_eigen REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(CGAL REQUIRED)
+find_package(GMP REQUIRED)
 
 include_directories(
   include
   ${PCL_INCLUDE_DIRS}
+  ${GMP_INCLUDE_DIRS}
 )
 
 add_executable(semantic_grid_mapper src/semantic_grid_mapper.cpp)
@@ -43,6 +46,13 @@ ament_target_dependencies(semantic_grid_mapper
   tf2_eigen
   tf2_geometry_msgs
   pcl_ros
+)
+
+# Add this line to link GMP
+target_link_libraries(semantic_grid_mapper
+  ${PCL_LIBRARIES}
+  ${GMP_LIBRARIES}
+  CGAL::CGAL
 )
 
 install(TARGETS semantic_grid_mapper
