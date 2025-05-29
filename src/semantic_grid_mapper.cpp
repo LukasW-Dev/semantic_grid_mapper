@@ -16,6 +16,12 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
+#include <grid_map_ros/grid_map_ros.hpp>
+
+#include <filters/filter_chain.hpp>
+#include <string>
+
+//#include <semantic_grid_mapper/FiltersDemo.hpp>
 #include "cluster.cpp"
 
 #include <functional> // for std::hash
@@ -71,10 +77,13 @@ private:
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
 
+  filters::FilterChain<grid_map::GridMap> filterChain_;
+  std::string filterChainParametersName_;
+
 public:
   SemanticGridMapper()
       : Node("semantic_grid_mapper"), tf_buffer_(this->get_clock()),
-        tf_listener_(tf_buffer_) {
+        tf_listener_(tf_buffer_), filterChain_("grid_map::GridMap") {
 
     // Declare all parameters expected from the YAML file
     this->declare_parameter<double>("resolution");
@@ -92,6 +101,8 @@ public:
 
     this->declare_parameter<double>("robot_height");
     this->declare_parameter<double>("max_veg_height");
+
+    this->declare_parameter("filter_chain_parameter_name", std::string("filters"));
 
     // Retrieve and store parameter values
     this->get_parameter("resolution", resolution_);
@@ -113,6 +124,9 @@ public:
 
     this->get_parameter("use_sim_time", use_sim_time_);
     this->set_parameter(rclcpp::Parameter("use_sim_time", use_sim_time_));
+
+    this->get_parameter("filter_chain_parameter_name", filterChainParametersName_);
+    RCLCPP_INFO(this->get_logger(), "Filter chain parameter name: %s", filterChainParametersName_.c_str());
 
     class_names_ = {"bush",          "dirt",       "fence",    "grass",
                     "gravel",        "log",        "mud",      "object",
@@ -199,6 +213,18 @@ public:
     grid_map_pub_ =
         create_publisher<grid_map_msgs::msg::GridMap>(grid_map_topic_, 10);
 
+    // Setup filter chain.
+    if (filterChain_.configure(
+        filterChainParametersName_, this->get_node_logging_interface(),
+        this->get_node_parameters_interface()))
+    {
+      RCLCPP_INFO(this->get_logger(), "Filter chain configured.");
+    } else {
+      RCLCPP_ERROR(this->get_logger(), "Could not configure the filter chain!");
+      rclcpp::shutdown();
+      return;
+    }
+
     RCLCPP_INFO(this->get_logger(), "Semantic Grid Mapper initialized.");
   }
 
@@ -233,7 +259,9 @@ private:
     // Initialize min height layer only once
     if (!map_.exists("min_height")) {
       map_.add("min_height");
+      map_.add("min_height_old");
       map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
+      map_["min_height_old"].setConstant(0.0);
     }
 
     // Move the whole map with the robot
@@ -263,6 +291,18 @@ private:
     pcl::PointCloud<pcl::PointXYZ> pcl_cloud;
     pcl::fromROSMsg(*msg, pcl_cloud);
 
+    // remove the points which are too close to the robot
+    pcl::PointCloud<pcl::PointXYZ> filtered_cloud;
+    for (const auto &point : pcl_cloud.points) {
+      if (std::hypot(point.x, point.y, point.z) >= 1.5) {
+        filtered_cloud.push_back(point);
+      }
+      else {
+        RCLCPP_DEBUG(this->get_logger(), "Point too close to robot, ignoring: (%f, %f, %f)", point.x, point.y, point.z);
+      }
+    }
+    pcl_cloud = filtered_cloud;
+
     // Transform the points into map frame
     pcl::PointCloud<pcl::PointXYZ> transformed_cloud;
     Eigen::Affine3d eigen_transform = tf2::transformToEigen(pc_transform.transform);
@@ -274,6 +314,11 @@ private:
       // Check if the point is inside the map
       grid_map::Position pos(point.x, point.y);
       if (!map_.isInside(pos)) {
+        continue;
+      }
+
+      // Ignore points which are too close (1m 3d distance)
+      if (std::hypot(point.x, point.y, point.z) < 1.0) {
         continue;
       }
 
@@ -290,14 +335,22 @@ private:
   void semanticPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
 
     // Move the whole map with the robot
-    geometry_msgs::msg::TransformStamped transform;
+    geometry_msgs::msg::TransformStamped robot_transform;
     try {
-      transform = tf_buffer_.lookupTransform(map_frame_id_, msg->header.frame_id,
-                                             tf2::TimePointZero);
+      robot_transform = tf_buffer_.lookupTransform(map_frame_id_, robot_base_frame_id_, tf2::TimePointZero);
 
-      double robot_x = transform.transform.translation.x;
-      double robot_y = transform.transform.translation.y;
+      double robot_x = robot_transform.transform.translation.x;
+      double robot_y = robot_transform.transform.translation.y;
       map_.move(grid_map::Position(robot_x, robot_y));
+    } catch (const tf2::TransformException &ex) {
+      RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
+      return;
+    }
+
+    // Get transform from msg frame to map frame
+    geometry_msgs::msg::TransformStamped pc_transform;
+    try {
+      pc_transform = tf_buffer_.lookupTransform(map_frame_id_, msg->header.frame_id, msg->header.stamp);
     } catch (const tf2::TransformException &ex) {
       RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
       return;
@@ -306,7 +359,9 @@ private:
     // Initialize min height layer only once
     if (!map_.exists("min_height")) {
       map_.add("min_height");
+      map_.add("min_height_old");
       map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
+      map_["min_height_old"].setConstant(std::numeric_limits<float>::quiet_NaN());
     }
 
     // Initialize vegetation zone layer only once
@@ -318,8 +373,8 @@ private:
     // Initialize obstacle zone layer only once
     if (!map_.exists("obstacle_zone")) {
       map_.add("obstacle_zone");
-      map_["obstacle_zone"].setConstant(std::numeric_limits<float>::quiet_NaN());
     }
+    map_["obstacle_zone"].setConstant(std::numeric_limits<float>::quiet_NaN());
 
 
     // Create PCL Cloud
@@ -329,7 +384,7 @@ private:
     // Transform the points into map frame
     pcl::PointCloud<pcl::PointXYZRGBL> transformed_cloud;
     Eigen::Affine3d eigen_transform =
-        tf2::transformToEigen(transform.transform);
+        tf2::transformToEigen(pc_transform.transform);
     pcl::transformPointCloud(pcl_cloud, transformed_cloud, eigen_transform);
 
     // Reset Hit Counts
@@ -369,7 +424,7 @@ private:
       map_.at(cls + "_hit", idx) += 1.0;
 
       
-      // Update vegetation zone layer
+      // Update obstacle zone layer
       if (!std::isnan(min_height)) {
         if (cls == "tree-foliage" || cls == "tree-trunk") {
           //RCLCPP_INFO(this->get_logger(), "z %f, min_height %f, max_veg_height %f, robot_height %f", point.z, min_height, max_veg_height_, robot_height_);
@@ -460,8 +515,8 @@ private:
         }
       }
 
-      // Set obstacle zone to nan if less than 10
-      if (map_.at("obstacle_zone", index) < 10.0) {
+      // Set obstacle zone to nan if too few (noise)
+      if (map_.at("obstacle_zone", index) < 5.0) {
         map_.at("obstacle_zone", index) = std::numeric_limits<float>::quiet_NaN();
       }
 
@@ -470,6 +525,11 @@ private:
       if (max_log_odd > 0) {
         map_.at("dominant_class", index) =
         packRGB(max_class_rgb[0], max_class_rgb[1], max_class_rgb[2]);
+      }
+
+      // If min height is NaN, use value from the old layer
+      if (std::isnan(map_.at("min_height", index))) {
+        map_.at("min_height", index) = map_.at("min_height_old", index);
       }
     }
 
@@ -484,8 +544,8 @@ private:
         count++;
       }
     }
-    RCLCPP_INFO(this->get_logger(), "obstacle zone coun before t: %d", count);
-    markAlphaShapeObstacleClusters(map_, obstacle_zone, 20);
+    // RCLCPP_INFO(this->get_logger(), "obstacle zone coun before t: %d", count);
+    markAlphaShapeObstacleClusters(map_, obstacle_zone, 2);
     count = 0;
     for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
       grid_map::Index index = *it;
@@ -493,13 +553,24 @@ private:
         count++;
       }
     }
-    RCLCPP_INFO(this->get_logger(), "obstacle zone coun after t: %d", count);
+    // RCLCPP_INFO(this->get_logger(), "obstacle zone coun after t: %d", count);
+    
+    // Apply filter chain.
+    // grid_map::GridMap min_height_filtered;
+    // if (!filterChain_.update(map_, min_height_filtered)) {
+    //   RCLCPP_ERROR(this->get_logger(), "Could not update the grid map filter chain!");
+    //   return;
+    // }
+    // RCLCPP_INFO(this->get_logger(), "Applied Filter!");
 
     grid_map_msgs::msg::GridMap map_msg;
     map_msg = *grid_map::GridMapRosConverter::toMessage(map_);
     map_msg.header.stamp = msg->header.stamp;
     grid_map_pub_->publish(map_msg);
+    map_["min_height_old"] = map_["min_height"];
+    map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
   }
+
 };
 
 int main(int argc, char **argv) {

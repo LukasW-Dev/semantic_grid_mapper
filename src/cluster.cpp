@@ -78,7 +78,7 @@ static std::vector<std::vector<Point>> clusterPoints(const std::vector<Point>& p
   return clusters;
 }
 
-void markAlphaShapeObstacleClusters(GridMap& map, const std::string& layer, double alpha_value, double clustering_eps = 1.0, int min_pts = 3)
+void markAlphaShapeObstacleClusters(GridMap& map, const std::string& layer, double alpha_value, double clustering_eps = 0.8, int min_pts = 3)
 {
   std::vector<Point> input_points;
 
