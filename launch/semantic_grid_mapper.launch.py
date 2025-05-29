@@ -5,7 +5,7 @@ import os
 def generate_launch_description():
     
     config_path = os.path.expanduser('~/ros2_ws/src/semantic_grid_mapper/config/grid_mapper_params.yaml')
-    filter_path = os.path.expanduser('~/ros2_ws/src/semantic_grid_mapper/config/filters_demo_filter_chain.yaml')
+    filter_path = os.path.expanduser('~/ros2_ws/src/semantic_grid_mapper/config/filter.yaml')
 
     return LaunchDescription([
         Node(
@@ -13,6 +13,6 @@ def generate_launch_description():
             executable='semantic_grid_mapper',
             name='semantic_grid_mapper_node',
             output='screen',
-            parameters=[config_path, filter_path],
+            parameters=[config_path],
         )
     ])

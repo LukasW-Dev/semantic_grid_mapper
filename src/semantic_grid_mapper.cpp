@@ -43,6 +43,14 @@ struct equal_to<grid_map::Index> {
 };
 }
 
+inline void unpackRGB(float rgb_float, uint8_t &r, uint8_t &g, uint8_t &b) {
+  uint32_t rgb;
+  std::memcpy(&rgb, &rgb_float, sizeof(rgb));
+  r = (rgb >> 16) & 0xFF;
+  g = (rgb >>  8) & 0xFF;
+  b = (rgb      ) & 0xFF;
+}
+
 using std::placeholders::_1;
 
 class SemanticGridMapper : public rclcpp::Node {
@@ -329,6 +337,27 @@ private:
       if (std::isnan(min_height) || point.z < min_height) {
         map_.at("min_height", idx) = point.z;
       }
+
+      // Update obstacle zone layer
+      if(map_.exists("min_height_filtered")) {
+        min_height = map_.at("min_height_filtered", idx);
+        float float_rgb = map_.at("dominant_class", idx);
+        uint8_t r, g, b;
+        unpackRGB(float_rgb, r, g, b);
+        std::string cls = color_to_class_[std::make_tuple(r, g, b)];
+        if (!std::isnan(min_height)) {
+          if (cls == "tree-foliage" || cls == "tree-trunk") {           
+            if (point.z > (min_height + max_veg_height_) 
+            && point.z < (min_height + robot_height_)) {
+              if (std::isnan(map_.at("obstacle_zone", idx))) {
+                map_.at("obstacle_zone", idx) = 0.0;
+              }
+              map_.at("obstacle_zone", idx) += 1.0;
+              // RCLCPP_INFO(this->get_logger(), "obstacle zone: %f", point.z);
+            }
+          }
+        }
+      }
     }
   }
 
@@ -544,7 +573,7 @@ private:
         count++;
       }
     }
-    // RCLCPP_INFO(this->get_logger(), "obstacle zone coun before t: %d", count);
+
     markAlphaShapeObstacleClusters(map_, obstacle_zone, 2);
     count = 0;
     for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
@@ -553,18 +582,16 @@ private:
         count++;
       }
     }
-    // RCLCPP_INFO(this->get_logger(), "obstacle zone coun after t: %d", count);
-    
+
     // Apply filter chain.
-    // grid_map::GridMap min_height_filtered;
-    // if (!filterChain_.update(map_, min_height_filtered)) {
-    //   RCLCPP_ERROR(this->get_logger(), "Could not update the grid map filter chain!");
-    //   return;
-    // }
-    // RCLCPP_INFO(this->get_logger(), "Applied Filter!");
+    grid_map::GridMap min_height_filtered;
+    if (!filterChain_.update(map_, min_height_filtered)) {
+      RCLCPP_ERROR(this->get_logger(), "Could not update the grid map filter chain!");
+      return;
+    }
 
     grid_map_msgs::msg::GridMap map_msg;
-    map_msg = *grid_map::GridMapRosConverter::toMessage(map_);
+    map_msg = *grid_map::GridMapRosConverter::toMessage(min_height_filtered);
     map_msg.header.stamp = msg->header.stamp;
     grid_map_pub_->publish(map_msg);
     map_["min_height_old"] = map_["min_height"];
