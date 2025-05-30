@@ -565,11 +565,13 @@ private:
     grid_map::Matrix& ground_class = map_["ground_class"];
     grid_map::Matrix& obstacle_class = map_["obstacle_class"];
     grid_map::Matrix& min_height = map_["min_height"];
+    grid_map::Matrix& min_height_old = map_["min_height_old"];
 
     // Map Iteration 1
     for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) 
     {
-      grid_map::Index index = *it;
+      //grid_map::Index index = *it;
+      const std::size_t i = it.getLinearIndex();
 
       // Calculate the total hits across all classes at this cell
       float total_ground_hits = 0.0;
@@ -578,9 +580,9 @@ private:
 
       for(auto &cls : cls_) {
         // Ground Layer
-        total_ground_hits += (*(cls.hit_ground))(index(0), index(1));
+        total_ground_hits += (*(cls.hit_ground))(i);
         // Obstacle Layer
-        total_obstacle_hits += (*(cls.hit_obstacle))(index(0), index(1));
+        total_obstacle_hits += (*(cls.hit_obstacle))(i);
         // // Sky Layer
         // total_sky_hits += cls.hit_sky->at(index);
       }
@@ -597,24 +599,24 @@ private:
       for (auto &cls : cls_) {
         
         // Ground Layer
-        float prob_ground = total_ground_hits ? (*(cls.hit_ground))(index(0), index(1)) / total_ground_hits : 0.0;
-        (*(cls.prob_ground))(index(0), index(1)) = prob_ground;
+        float prob_ground = total_ground_hits ? (*(cls.hit_ground))(i) / total_ground_hits : 0.0;
+        (*(cls.prob_ground))(i) = prob_ground;
 
         // Obstacle Layer
-        float prob_obstacle = total_obstacle_hits ? (*(cls.hit_obstacle))(index(0), index(1)) / total_obstacle_hits : 0.0;
-        (*(cls.prob_obstacle))(index(0), index(1)) = prob_obstacle;
+        float prob_obstacle = total_obstacle_hits ? (*(cls.hit_obstacle))(i) / total_obstacle_hits : 0.0;
+        (*(cls.prob_obstacle))(i) = prob_obstacle;
 
         // // Sky Layer
         // (*(cls.prob_sky))(index(0), index(1)) = total_sky_hits ? cls.hit_sky->at(index) / total_sky_hits : 0.0;
 
         double log_odds_ground = update_log_odds(
-            (*(cls.hist_ground))(index(0), index(1)), prob_to_log_odds(prob_ground));
+            (*(cls.hist_ground))(i), prob_to_log_odds(prob_ground));
 
         double log_odds_obstacle = update_log_odds(
-            (*(cls.hist_obstacle))(index(0), index(1)), prob_to_log_odds(prob_obstacle));
+            (*(cls.hist_obstacle))(i), prob_to_log_odds(prob_obstacle));
 
-        (*(cls.hist_ground))(index(0), index(1)) = log_odds_ground;
-        (*(cls.hist_obstacle))(index(0), index(1)) = log_odds_obstacle;
+        (*(cls.hist_ground))(i) = log_odds_ground;
+        (*(cls.hist_obstacle))(i) = log_odds_obstacle;
 
         if(log_odds_ground > max_log_odd_ground) { 
           max_log_odd_ground = log_odds_ground; 
@@ -628,23 +630,23 @@ private:
       }
 
       // Set obstacle zone to nan if too few (noise)
-      if (obstacle_zone(index(0), index(1)) < 5.0) {
-        obstacle_zone(index(0), index(1)) = std::numeric_limits<float>::quiet_NaN();
+      if (obstacle_zone(i) < 5.0) {
+        obstacle_zone(i) = std::numeric_limits<float>::quiet_NaN();
       }
 
       // Set the ground class rgb
       if (max_log_odd_ground > 0) {
-        ground_class(index(0), index(1)) = packRGB(max_class_rgb_ground[0], max_class_rgb_ground[1], max_class_rgb_ground[2]);
+        ground_class(i) = packRGB(max_class_rgb_ground[0], max_class_rgb_ground[1], max_class_rgb_ground[2]);
       }
 
       // Set the obstacle class rgb
       if (max_log_odd_obstacle > 0) {
-        obstacle_class(index(0), index(1)) = packRGB(max_class_rgb_obstacle[0], max_class_rgb_obstacle[1], max_class_rgb_obstacle[2]);
+        obstacle_class(i) = packRGB(max_class_rgb_obstacle[0], max_class_rgb_obstacle[1], max_class_rgb_obstacle[2]);
       }
 
       // If min height is NaN, use value from the old layer
-      if (std::isnan(min_height(index(0), index(1)))) {
-        min_height(index(0), index(1)) = map_.at("min_height_old", index);
+      if (std::isnan(min_height(i))) {
+        min_height(i) = min_height_old(i);
       }
     }
 
