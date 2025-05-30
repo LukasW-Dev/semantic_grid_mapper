@@ -194,7 +194,8 @@ public:
     }
 
     // Visualization layer which combines all classes
-    map_.add("dominant_class");
+    map_.add("ground_class");
+    map_["ground_class"].setConstant(-1.0);
 
     // Initialize the map
     map_.setGeometry(grid_map::Length(length_, height_), resolution_,
@@ -204,7 +205,6 @@ public:
     for (const auto &name : class_names_) {
       map_[name].setConstant(0.0); // log-odds 0 => p = 0.5
     }
-    map_["dominant_class"].setConstant(-1.0);
 
     semantic_cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
         semantic_pointcloud_topic_, 0,
@@ -341,7 +341,7 @@ private:
       // Update obstacle zone layer
       if(map_.exists("min_height_filtered")) {
         min_height = map_.at("min_height_filtered", idx);
-        float float_rgb = map_.at("dominant_class", idx);
+        float float_rgb = map_.at("ground_class", idx);
         uint8_t r, g, b;
         unpackRGB(float_rgb, r, g, b);
         std::string cls = color_to_class_[std::make_tuple(r, g, b)];
@@ -363,11 +363,11 @@ private:
 
   void semanticPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
 
+    /*****************************************************************************************************************/
     // Move the whole map with the robot
     geometry_msgs::msg::TransformStamped robot_transform;
     try {
       robot_transform = tf_buffer_.lookupTransform(map_frame_id_, robot_base_frame_id_, tf2::TimePointZero);
-
       double robot_x = robot_transform.transform.translation.x;
       double robot_y = robot_transform.transform.translation.y;
       map_.move(grid_map::Position(robot_x, robot_y));
@@ -376,7 +376,8 @@ private:
       return;
     }
 
-    // Get transform from msg frame to map frame
+    /*****************************************************************************************************************/
+    // Transform the points into map frame
     geometry_msgs::msg::TransformStamped pc_transform;
     try {
       pc_transform = tf_buffer_.lookupTransform(map_frame_id_, msg->header.frame_id, msg->header.stamp);
@@ -384,6 +385,11 @@ private:
       RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
       return;
     }
+    pcl::PointCloud<pcl::PointXYZRGBL> transformed_cloud;
+    Eigen::Affine3d eigen_transform = tf2::transformToEigen(pc_transform.transform);
+    pcl::PointCloud<pcl::PointXYZRGBL> pcl_cloud;
+    pcl::fromROSMsg(*msg, pcl_cloud);
+    pcl::transformPointCloud(pcl_cloud, transformed_cloud, eigen_transform);
 
     // Initialize min height layer only once
     if (!map_.exists("min_height")) {
@@ -404,18 +410,6 @@ private:
       map_.add("obstacle_zone");
     }
     
-
-
-    // Create PCL Cloud
-    pcl::PointCloud<pcl::PointXYZRGBL> pcl_cloud;
-    pcl::fromROSMsg(*msg, pcl_cloud);
-
-    // Transform the points into map frame
-    pcl::PointCloud<pcl::PointXYZRGBL> transformed_cloud;
-    Eigen::Affine3d eigen_transform =
-        tf2::transformToEigen(pc_transform.transform);
-    pcl::transformPointCloud(pcl_cloud, transformed_cloud, eigen_transform);
-
     // Reset Hit Counts
     for (auto name : class_names_) {
       map_[name + "_hit"].setConstant(0.0);
@@ -450,9 +444,13 @@ private:
       
       // Update class hit count
       std::string cls = color_to_class_[color];
-      map_.at(cls + "_hit", idx) += 1.0;
+      if(map_.exists("min_height_smooth")) {
+        if(point.z < map_.at("min_height_smooth", idx) + max_veg_height_) {
+          RCLCPP_DEBUG(this->get_logger(), "Point (%f, %f, %f) classified as %s", point.x, point.y, point.z, cls.c_str());
+          map_.at(cls + "_hit", idx) += 1.0;
+        }
+      }
 
-      
       // Update obstacle zone layer
       if (!std::isnan(min_height)) {
         if (cls == "tree-foliage" || cls == "tree-trunk") {
@@ -550,10 +548,9 @@ private:
       }
 
       
-      // Set the dominent class rgb
+      // Set the ground class rgb
       if (max_log_odd > 0) {
-        map_.at("dominant_class", index) =
-        packRGB(max_class_rgb[0], max_class_rgb[1], max_class_rgb[2]);
+        map_.at("ground_class", index) = packRGB(max_class_rgb[0], max_class_rgb[1], max_class_rgb[2]);
       }
 
       // If min height is NaN, use value from the old layer
@@ -589,6 +586,11 @@ private:
       RCLCPP_ERROR(this->get_logger(), "Could not update the grid map filter chain!");
       return;
     }
+    // Copy min_height_smooth from min_height_filtered to map_
+    if(!map_.exists("min_height_smooth")) {
+      map_.add("min_height_smooth");
+    }
+    map_["min_height_smooth"] = min_height_filtered["min_height_smooth"];
 
     grid_map_msgs::msg::GridMap map_msg;
     map_msg = *grid_map::GridMapRosConverter::toMessage(min_height_filtered);
