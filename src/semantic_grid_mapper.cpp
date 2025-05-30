@@ -403,7 +403,7 @@ private:
     if (!map_.exists("obstacle_zone")) {
       map_.add("obstacle_zone");
     }
-    map_["obstacle_zone"].setConstant(std::numeric_limits<float>::quiet_NaN());
+    
 
 
     // Create PCL Cloud
@@ -596,6 +596,7 @@ private:
     grid_map_pub_->publish(map_msg);
     map_["min_height_old"] = map_["min_height"];
     map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
+    map_["obstacle_zone"].setConstant(std::numeric_limits<float>::quiet_NaN());
   }
 
 };
