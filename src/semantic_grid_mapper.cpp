@@ -53,6 +53,19 @@ inline void unpackRGB(float rgb_float, uint8_t &r, uint8_t &g, uint8_t &b) {
   b = (rgb      ) & 0xFF;
 }
 
+struct ClassLayers {
+  grid_map::Matrix* hit_ground;
+  grid_map::Matrix* hit_obstacle;
+  //grid_map::Matrix* hit_sky;
+  grid_map::Matrix* prob_ground;
+  grid_map::Matrix* prob_obstacle;
+  //grid_map::Matrix* prob_sky;
+  grid_map::Matrix* hist_ground;
+  grid_map::Matrix* hist_obstacle;
+  //grid_map::Matrix* hist_sky;
+  std::array<unsigned char,3> rgb;
+};
+
 using std::placeholders::_1;
 
 class SemanticGridMapper : public rclcpp::Node {
@@ -89,6 +102,8 @@ private:
 
   filters::FilterChain<grid_map::GridMap> filterChain_;
   std::string filterChainParametersName_;
+
+  std::vector<ClassLayers> cls_;
 
 public:
   SemanticGridMapper()
@@ -193,10 +208,10 @@ public:
     // For example if a cell has a high probability to be tree-foliage, the probability for tree-trunk is low
     // even though there might be hits in the cell. This is a problem if we wan't to extract the info whether there is a tree trunk because
     // the info could get lost due to many hits for tree-foliage.
-    for (auto name : class_names_) {
-      map_.add(name + "_idp");
-      map_[name + "_idp"].setConstant(0.0);
-    }
+    // for (auto name : class_names_) {
+    //   map_.add(name + "_idp");
+    //   map_[name + "_idp"].setConstant(0.0);
+    // }
 
     // Visualization layer which combines all classes
     map_.add("ground_class");
@@ -242,6 +257,22 @@ public:
       RCLCPP_ERROR(this->get_logger(), "Could not configure the filter chain!");
       rclcpp::shutdown();
       return;
+    }
+
+    cls_.reserve(class_names_.size());
+    for (auto const & name : class_names_) {
+      cls_.push_back({
+        &map_.get(name + "_ground_hit"),
+        &map_.get(name + "_obstacle_hit"),
+        //&map_.get(name + "_sky_hit"),
+        &map_.get(name + "_ground_prob"),
+        &map_.get(name + "_obstacle_prob"),
+        //&map_.get(name + "_sky_prob"),
+        &map_.get(name + "_ground"),
+        &map_.get(name + "_obstacle"),
+        //&map_.get(name + "_sky"),
+        class_to_color_[name]
+        });
     }
 
     RCLCPP_INFO(this->get_logger(), "Semantic Grid Mapper initialized.");
@@ -392,7 +423,7 @@ private:
 
     // Measure Robot Transform Time
     auto robot_transform_time = std::chrono::steady_clock::now();
-    RCLCPP_INFO(this->get_logger(), "Robot transform took %f ms", std::chrono::duration<double, std::milli>(robot_transform_time - timestamp).count());
+    RCLCPP_DEBUG(this->get_logger(), "Robot transform took %f ms", std::chrono::duration<double, std::milli>(robot_transform_time - timestamp).count());
 
     /*****************************************************************************************************************/
     // Transform the points into map frame
@@ -411,7 +442,7 @@ private:
 
     // Measure Point Cloud Transform Time
     auto pointcloud_transform_time = std::chrono::steady_clock::now();
-    RCLCPP_INFO(this->get_logger(), "Point cloud transform took %f ms", std::chrono::duration<double, std::milli>(pointcloud_transform_time - robot_transform_time).count());
+    RCLCPP_DEBUG(this->get_logger(), "Point cloud transform took %f ms", std::chrono::duration<double, std::milli>(pointcloud_transform_time - robot_transform_time).count());
 
     // Initialize min height layer only once
     if (!map_.exists("min_height")) {
@@ -441,7 +472,7 @@ private:
 
     // Measure Layer Initialization Time
     auto layer_initialization_time = std::chrono::steady_clock::now();
-    RCLCPP_INFO(this->get_logger(), "Layer initialization took %f ms", std::chrono::duration<double, std::milli>(layer_initialization_time - pointcloud_transform_time).count());
+    RCLCPP_DEBUG(this->get_logger(), "Layer initialization took %f ms", std::chrono::duration<double, std::milli>(layer_initialization_time - pointcloud_transform_time).count());
 
     // Point Iteration
     for (const auto &point : transformed_cloud.points) 
@@ -512,7 +543,7 @@ private:
 
     // Measure Point Iteration Time
     auto point_iteration_time = std::chrono::steady_clock::now();
-    RCLCPP_INFO(this->get_logger(), "Point iteration took %f ms", std::chrono::duration<double, std::milli>(point_iteration_time - layer_initialization_time).count());
+    RCLCPP_DEBUG(this->get_logger(), "Point iteration took %f ms", std::chrono::duration<double, std::milli>(point_iteration_time - layer_initialization_time).count());
 
     // Reset probabilities
     for (auto name : class_names_) {
@@ -530,16 +561,14 @@ private:
       float total_ground_hits = 0.0;
       float total_obstacle_hits = 0.0;
       // float total_sky_hits = 0.0;
-      for (const auto &class_name : class_names_) {
-        if (map_.isValid(index, class_name + "_ground_hit")) {
-          total_ground_hits += map_.at(class_name + "_ground_hit", index);
-        }
-        if (map_.isValid(index, class_name + "_obstacle_hit")) {
-          total_obstacle_hits += map_.at(class_name + "_obstacle_hit", index);
-        }
-        // if (map_.isValid(index, class_name + "_sky_hit")) {
-        //   total_sky_hits += map_.at(class_name + "_sky_hit", index);
-        // }
+
+      for(auto &cls : cls_) {
+        // Ground Layer
+        total_ground_hits += (*(cls.hit_ground))(index(0), index(1));
+        // Obstacle Layer
+        total_obstacle_hits += (*(cls.hit_obstacle))(index(0), index(1));
+        // // Sky Layer
+        // total_sky_hits += cls.hit_sky->at(index);
       }
 
       // needed for log odd calculation
@@ -551,79 +580,37 @@ private:
       // double max_log_odd_sky = log_odd_min_;
 
       // Calculate normalized probabilities and store them
-      for (const auto &class_name : class_names_) {
+      for (auto &cls : cls_) {
         
         // Ground Layer
-        float hit_count = 0.0;
-        if (map_.isValid(index, class_name + "_ground_hit")) {
-          hit_count = map_.at(class_name + "_ground_hit", index);
-        }
-        float prob = (total_ground_hits > 0.0) ? (hit_count / total_ground_hits) : 0.0;
-        map_.at(class_name + "_ground_prob", index) = prob;
+        float prob_ground = total_ground_hits ? (*(cls.hit_ground))(index(0), index(1)) / total_ground_hits : 0.0;
+        (*(cls.prob_ground))(index(0), index(1)) = prob_ground;
 
         // Obstacle Layer
-        hit_count = 0.0;
-        if (map_.isValid(index, class_name + "_obstacle_hit")) {
-          hit_count = map_.at(class_name + "_obstacle_hit", index);
-        }
-        prob = (total_obstacle_hits > 0.0) ? (hit_count / total_obstacle_hits) : 0.0;
-        map_.at(class_name + "_obstacle_prob", index) = prob;
+        float prob_obstacle = total_obstacle_hits ? (*(cls.hit_obstacle))(index(0), index(1)) / total_obstacle_hits : 0.0;
+        (*(cls.prob_obstacle))(index(0), index(1)) = prob_obstacle;
 
         // // Sky Layer
-        // hit_count = 0.0;
-        // if (map_.isValid(index, class_name + "_sky_hit")) {
-        //   hit_count = map_.at(class_name + "_sky_hit", index);
-        // }
-        // prob = (total_sky_hits > 0.0) ? (hit_count / total_sky_hits) : 0.0;
-        // map_.at(class_name + "_sky_prob", index) = prob;
+        // (*(cls.prob_sky))(index(0), index(1)) = total_sky_hits ? cls.hit_sky->at(index) / total_sky_hits : 0.0;
 
-        // Update the historical ground probabilities
-        {
-          auto &val = map_.at(class_name + "_ground", index);
-          val = update_log_odds(
-              val, prob_to_log_odds(map_.at(class_name + "_ground_prob", index)));
+        double log_odds_ground = update_log_odds(
+            (*(cls.hist_ground))(index(0), index(1)), prob_to_log_odds(prob_ground));
 
-          // Calculate the rgb visualizatin for the class layers
-          const auto &rgb = class_to_color_[class_name];
+        double log_odds_obstacle = update_log_odds(
+            (*(cls.hist_obstacle))(index(0), index(1)), prob_to_log_odds(prob_obstacle));
 
-          // Store the most dominant ground class
-          if (val > max_log_odd_ground) {
-            max_log_odd_ground = val;
-            max_class_rgb_ground = rgb;
-          }
+        (*(cls.hist_ground))(index(0), index(1)) = log_odds_ground;
+        (*(cls.hist_obstacle))(index(0), index(1)) = log_odds_obstacle;
+
+        if(log_odds_ground > max_log_odd_ground) { 
+          max_log_odd_ground = log_odds_ground; 
+          max_class_rgb_ground = cls.rgb; 
+        }
+        if(log_odds_obstacle > max_log_odd_obstacle) { 
+          max_log_odd_obstacle = log_odds_obstacle; 
+          max_class_rgb_obstacle = cls.rgb; 
         }
 
-        // Update the historical obstacle probabilities
-        {
-          auto &val = map_.at(class_name + "_obstacle", index);
-          val = update_log_odds(
-              val, prob_to_log_odds(map_.at(class_name + "_obstacle_prob", index)));
-
-          // Calculate the rgb visualizatin for the class layers
-          const auto &rgb = class_to_color_[class_name];
-
-          // Store the most dominant obstacle class
-          if (val > max_log_odd_obstacle) {
-            max_log_odd_obstacle = val;
-            max_class_rgb_obstacle = rgb;
-          }
-        }
-
-        // // Update the historical sky probabilities
-        // {
-        //   auto &val = map_.at(class_name + "_sky", index);
-        //   val = update_log_odds(
-        //       val, prob_to_log_odds(map_.at(class_name + "_sky_prob", index)));
-
-        //   // Calculate the rgb visualizatin for the class layers
-        //   const auto &rgb = class_to_color_[class_name];
-
-        //   // Store the most dominant sky class
-        //   if (val > max_log_odd_sky) {
-        //     max_log_odd_sky = val;
-        //     max_class_rgb_sky = rgb;
-        //   }
-        // }
       }
 
       // Set obstacle zone to nan if too few (noise)
@@ -641,11 +628,6 @@ private:
         map_.at("obstacle_class", index) = packRGB(max_class_rgb_obstacle[0], max_class_rgb_obstacle[1], max_class_rgb_obstacle[2]);
       }
 
-      // // Set the sky class rgb
-      // if (max_log_odd_sky > 0) {
-      //   map_.at("sky_class", index) = packRGB(max_class_rgb_sky[0], max_class_rgb_sky[1], max_class_rgb_sky[2]);
-      // }
-
       // If min height is NaN, use value from the old layer
       if (std::isnan(map_.at("min_height", index))) {
         map_.at("min_height", index) = map_.at("min_height_old", index);
@@ -654,7 +636,7 @@ private:
 
     // Measure Map Iteration Time
     auto map_iteration_time = std::chrono::steady_clock::now();
-    RCLCPP_INFO(this->get_logger(), "Map iteration took %f ms", std::chrono::duration<double, std::milli>(map_iteration_time - point_iteration_time).count());
+    RCLCPP_DEBUG(this->get_logger(), "Map iteration took %f ms", std::chrono::duration<double, std::milli>(map_iteration_time - point_iteration_time).count());
 
     // Fill the obstacle zone
     std::string obstacle_zone = "obstacle_zone";
@@ -664,7 +646,7 @@ private:
 
     // Measure Obstacle Zone Time
     auto obstacle_zone_time = std::chrono::steady_clock::now();
-    RCLCPP_INFO(this->get_logger(), "Obstacle zone took %f ms", std::chrono::duration<double, std::milli>(obstacle_zone_time - map_iteration_time).count());
+    RCLCPP_DEBUG(this->get_logger(), "Obstacle zone took %f ms", std::chrono::duration<double, std::milli>(obstacle_zone_time - map_iteration_time).count());
 
     // Apply filter chain.
     grid_map::GridMap min_height_filtered;
@@ -675,7 +657,7 @@ private:
 
     // Measure Filter Chain Time
     auto filter_chain_time = std::chrono::steady_clock::now();
-    RCLCPP_INFO(this->get_logger(), "Filter chain took %f ms", std::chrono::duration<double, std::milli>(filter_chain_time - obstacle_zone_time).count());
+    RCLCPP_DEBUG(this->get_logger(), "Filter chain took %f ms", std::chrono::duration<double, std::milli>(filter_chain_time - obstacle_zone_time).count());
 
     // Copy min_height_smooth from min_height_filtered to map_
     if(!map_.exists("min_height_smooth")) {
