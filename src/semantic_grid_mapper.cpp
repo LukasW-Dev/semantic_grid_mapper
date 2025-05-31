@@ -21,7 +21,7 @@
 #include <filters/filter_chain.hpp>
 #include <string>
 
-//#include <semantic_grid_mapper/FiltersDemo.hpp>
+#include "morphology.cpp"
 #include "cluster.cpp"
 
 #include <functional> // for std::hash
@@ -240,7 +240,7 @@ public:
     min_height_smooth_ = &map_["min_height_smooth"];
 
     map_.add("obstacle_zone");
-    map_["obstacle_zone"].setConstant(0.0); // 0 = no obstacle, 1 = obstacle
+    map_["obstacle_zone"].setConstant(0.0); // 0 = no obstacle, 100 = obstacle
     obstacle_zone_ = &map_["obstacle_zone"];
 
     // Initialize the map
@@ -395,23 +395,23 @@ private:
       }
 
       // Update obstacle zone layer
-      min_height_val = (*min_height_smooth_)(idx(0), idx(1));
-      float float_rgb = (*ground_class_)(idx(0), idx(1));
-      uint8_t r, g, b;
-      unpackRGB(float_rgb, r, g, b);
-      std::string cls = color_to_class_[std::make_tuple(r, g, b)];
-      if (!std::isnan(min_height_val)) {
-        if (cls == "tree-foliage" || cls == "tree-trunk") {
-          if (point.z > (min_height_val + max_veg_height_)
-              && point.z < (min_height_val + robot_height_)) {
-            if (std::isnan((*obstacle_zone_)(idx(0), idx(1)))) {
-              (*obstacle_zone_)(idx(0), idx(1)) = 0.0;
-            }
-            (*obstacle_zone_)(idx(0), idx(1)) += 1.0;
-            // RCLCPP_INFO(this->get_logger(), "obstacle zone: %f", point.z);
-          }
-        }
-      }
+      // min_height_val = (*min_height_smooth_)(idx(0), idx(1));
+      // float float_rgb = (*ground_class_)(idx(0), idx(1));
+      // uint8_t r, g, b;
+      // unpackRGB(float_rgb, r, g, b);
+      // std::string cls = color_to_class_[std::make_tuple(r, g, b)];
+      // if (!std::isnan(min_height_val)) {
+      //   if (cls == "tree-foliage" || cls == "tree-trunk") {
+      //     if (point.z > (min_height_val + max_veg_height_)
+      //         && point.z < (min_height_val + robot_height_)) {
+      //       if (std::isnan((*obstacle_zone_)(idx(0), idx(1)))) {
+      //         (*obstacle_zone_)(idx(0), idx(1)) = 0.0;
+      //       }
+      //       (*obstacle_zone_)(idx(0), idx(1)) += 1.0;
+      //       // RCLCPP_INFO(this->get_logger(), "obstacle zone: %f", point.z);
+      //     }
+      //   }
+      // }
       
     }
   }
@@ -523,7 +523,10 @@ private:
         // Obstacle Layer
         else if(point.z >= (*min_height_smooth_)(idx(0), idx(1)) + max_veg_height_ 
         && point.z < (*min_height_smooth_)(idx(0), idx(1)) + robot_height_) {
-          map_.at(cls + "_obstacle_hit", idx) += 1.0;
+          // only add hit if class is not grass or dirt or gravel
+          if (cls != "grass" && cls != "dirt" && cls != "gravel" && cls != "mud" && cls != "water") {
+            map_.at(cls + "_obstacle_hit", idx) += 1.0;
+          }
         }
 
         // // Sky Layer
@@ -533,20 +536,20 @@ private:
       }
 
       // Update obstacle zone layer
-      if (!std::isnan(min_height)) {
-        if (cls == "tree-foliage" || cls == "tree-trunk") {
-          //RCLCPP_INFO(this->get_logger(), "z %f, min_height %f, max_veg_height %f, robot_height %f", point.z, min_height, max_veg_height_, robot_height_);
+      // if (!std::isnan(min_height)) {
+      //   if (cls == "tree-foliage" || cls == "tree-trunk") {
+      //     //RCLCPP_INFO(this->get_logger(), "z %f, min_height %f, max_veg_height %f, robot_height %f", point.z, min_height, max_veg_height_, robot_height_);
 
-          if (point.z > (min_height + max_veg_height_) 
-          && point.z < (min_height + robot_height_)) {
-            if (std::isnan((*obstacle_zone_)(idx(0), idx(1)))) {
-              (*obstacle_zone_)(idx(0), idx(1)) = 0.0;
-            }
-            (*obstacle_zone_)(idx(0), idx(1)) += 1.0;
-            // RCLCPP_INFO(this->get_logger(), "obstacle zone: %f", point.z);
-          }
-        }
-      }
+      //     if (point.z > (min_height + max_veg_height_) 
+      //     && point.z < (min_height + robot_height_)) {
+      //       if (std::isnan((*obstacle_zone_)(idx(0), idx(1)))) {
+      //         (*obstacle_zone_)(idx(0), idx(1)) = 0.0;
+      //       }
+      //       (*obstacle_zone_)(idx(0), idx(1)) += 1.0;
+      //       // RCLCPP_INFO(this->get_logger(), "obstacle zone: %f", point.z);
+      //     }
+      //   }
+      // }
     }
 
     // Measure Point Iteration Time
@@ -633,7 +636,7 @@ private:
       }
 
       // Set obstacle zone to nan if too few (noise)
-      if ((*obstacle_zone_)(i) < 5.0) {
+      if ((*obstacle_zone_)(i) < 1.0) {
         (*obstacle_zone_)(i) = std::numeric_limits<float>::quiet_NaN();
       }
 
@@ -645,6 +648,7 @@ private:
       // Set the obstacle class rgb
       if (max_log_odd_obstacle > 0) {
         (*obstacle_class_)(i) = packRGB(max_class_rgb_obstacle[0], max_class_rgb_obstacle[1], max_class_rgb_obstacle[2]);
+        (*obstacle_zone_)(i) = 1000; // Mark as obstacle zone
       }
 
       // If min height is NaN, use value from the old layer
@@ -657,8 +661,11 @@ private:
     auto map_iteration_time = std::chrono::steady_clock::now();
     RCLCPP_DEBUG(this->get_logger(), "Map iteration took %f ms", std::chrono::duration<double, std::milli>(map_iteration_time - point_iteration_time).count());
 
+
+
     // Fill the obstacle zone
-    markAlphaShapeObstacleClusters(map_, "obstacle_zone", 2);
+    //markAlphaShapeObstacleClusters(map_, "obstacle_zone", 2, this->get_logger());
+    morphologicalClose3x3(map_, "obstacle_zone");
 
     // Measure Obstacle Zone Time
     auto obstacle_zone_time = std::chrono::steady_clock::now();
@@ -684,7 +691,7 @@ private:
     grid_map_pub_->publish(map_msg);
     map_["min_height_old"] = map_["min_height"];
     map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
-    map_["obstacle_zone"].setConstant(std::numeric_limits<float>::quiet_NaN());
+    // map_["obstacle_zone"].setConstant(std::numeric_limits<float>::quiet_NaN());
 
     // Measure Publishing Time
     auto publishing_time = std::chrono::steady_clock::now();

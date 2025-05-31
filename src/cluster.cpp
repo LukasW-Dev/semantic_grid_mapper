@@ -78,15 +78,30 @@ static std::vector<std::vector<Point>> clusterPoints(const std::vector<Point>& p
   return clusters;
 }
 
-void markAlphaShapeObstacleClusters(GridMap& map, const std::string& layer, double alpha_value, double clustering_eps = 0.8, int min_pts = 3)
+float packRGB(uint8_t r, uint8_t g, uint8_t b) {
+  uint32_t rgb = (static_cast<uint32_t>(r) << 16 |
+                  static_cast<uint32_t>(g) << 8 | static_cast<uint32_t>(b));
+  float rgb_float;
+  std::memcpy(&rgb_float, &rgb, sizeof(float));
+  return rgb_float;
+}
+
+void markAlphaShapeObstacleClusters(GridMap& map, const std::string& layer, double alpha_value, rclcpp::Logger logger, double clustering_eps = 0.5, int min_pts = 3)
 {
   std::vector<Point> input_points;
 
+  grid_map::Matrix& layer_data = map[layer];
+
   // Collect all obstacle cells
   for (GridMapIterator it(map); !it.isPastEnd(); ++it) {
-    if (!map.isValid(*it, layer)) continue;
-    if (std::isnan(map.at(layer, *it))) continue;
-    if (map.at(layer, *it) < 0.5) continue;
+
+    const std::size_t i = it.getLinearIndex();
+
+
+    if (std::isnan(layer_data(i))) continue;
+    if (layer_data(i) < 1.0) continue;
+
+    RCLCPP_INFO(logger, "Processing point");
 
     Position pos;
     map.getPosition(*it, pos);
@@ -98,7 +113,7 @@ void markAlphaShapeObstacleClusters(GridMap& map, const std::string& layer, doub
   auto clusters = clusterPoints(input_points, clustering_eps, min_pts);
 
   for (const auto& cluster_pts : clusters) {
-    if (cluster_pts.size() < 4) continue;
+    if (cluster_pts.size() < 2) continue;
 
     AlphaShape alpha_shape(cluster_pts.begin(), cluster_pts.end(), alpha_value, AlphaShape::GENERAL);
     alpha_shape.set_mode(AlphaShape::REGULARIZED);
@@ -127,7 +142,7 @@ void markAlphaShapeObstacleClusters(GridMap& map, const std::string& layer, doub
       poly.addVertex(Position(pt.x(), pt.y()));
 
     for (PolygonIterator it(map, poly); !it.isPastEnd(); ++it) {
-      map.at(layer, *it) = 10.0;
+      map.at(layer, *it) = 1000;
     }
   }
 }
