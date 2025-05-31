@@ -106,6 +106,13 @@ private:
   std::vector<ClassLayers> cls_;
   rclcpp::TimerBase::SharedPtr update_timer_;
 
+  grid_map::Matrix* min_height_;
+  grid_map::Matrix* min_height_smooth_;
+  grid_map::Matrix* ground_class_;
+  grid_map::Matrix* obstacle_zone_;
+  grid_map::Matrix* obstacle_class_;
+  grid_map::Matrix* min_height_old_;
+
 public:
   SemanticGridMapper()
       : Node("semantic_grid_mapper"), tf_buffer_(this->get_clock()),
@@ -219,6 +226,8 @@ public:
     map_["ground_class"].setConstant(-1.0);
     map_.add("obstacle_class");
     map_["obstacle_class"].setConstant(-1.0);
+    ground_class_ = &map_["ground_class"];
+    obstacle_class_ = &map_["obstacle_class"];
 
     map_.add("min_height");
     map_.add("min_height_old");
@@ -226,9 +235,13 @@ public:
     map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
     map_["min_height_old"].setConstant(std::numeric_limits<float>::quiet_NaN());
     map_["min_height_smooth"].setConstant(std::numeric_limits<float>::quiet_NaN());
+    min_height_ = &map_["min_height"];
+    min_height_old_ = &map_["min_height_old"];
+    min_height_smooth_ = &map_["min_height_smooth"];
 
     map_.add("obstacle_zone");
     map_["obstacle_zone"].setConstant(0.0); // 0 = no obstacle, 1 = obstacle
+    obstacle_zone_ = &map_["obstacle_zone"];
 
     // Initialize the map
     map_.setGeometry(grid_map::Length(length_, height_), resolution_,
@@ -373,33 +386,28 @@ private:
         continue;
       }
 
-      // Ignore points which are too close (1m 3d distance)
-      if (std::hypot(point.x, point.y, point.z) < 1.0) {
-        continue;
-      }
-
       // Update the min height layer
       grid_map::Index idx;
       map_.getIndex(pos, idx);
-      float min_height = map_.at("min_height", idx);
-      if (std::isnan(min_height) || point.z < min_height) {
-        map_.at("min_height", idx) = point.z;
+      float min_height_val = (*min_height_)(idx(0), idx(1));
+      if (std::isnan(min_height_val) || point.z < min_height_val) {
+        (*min_height_)(idx(0), idx(1)) = point.z;
       }
 
       // Update obstacle zone layer
-      min_height = map_.at("min_height_smooth", idx);
-      float float_rgb = map_.at("ground_class", idx);
+      min_height_val = (*min_height_smooth_)(idx(0), idx(1));
+      float float_rgb = (*ground_class_)(idx(0), idx(1));
       uint8_t r, g, b;
       unpackRGB(float_rgb, r, g, b);
       std::string cls = color_to_class_[std::make_tuple(r, g, b)];
-      if (!std::isnan(min_height)) {
-        if (cls == "tree-foliage" || cls == "tree-trunk") {           
-          if (point.z > (min_height + max_veg_height_) 
-          && point.z < (min_height + robot_height_)) {
-            if (std::isnan(map_.at("obstacle_zone", idx))) {
-              map_.at("obstacle_zone", idx) = 0.0;
+      if (!std::isnan(min_height_val)) {
+        if (cls == "tree-foliage" || cls == "tree-trunk") {
+          if (point.z > (min_height_val + max_veg_height_)
+              && point.z < (min_height_val + robot_height_)) {
+            if (std::isnan((*obstacle_zone_)(idx(0), idx(1)))) {
+              (*obstacle_zone_)(idx(0), idx(1)) = 0.0;
             }
-            map_.at("obstacle_zone", idx) += 1.0;
+            (*obstacle_zone_)(idx(0), idx(1)) += 1.0;
             // RCLCPP_INFO(this->get_logger(), "obstacle zone: %f", point.z);
           }
         }
@@ -451,10 +459,9 @@ private:
 
     
     // Reset Hit Counts
-    for (auto name : class_names_) {
-      map_[name + "_ground_hit"].setConstant(0.0);
-      map_[name + "_obstacle_hit"].setConstant(0.0);
-      // map_[name + "_sky_hit"].setConstant(0.0);
+    for (auto cls : cls_) {
+      cls.hit_ground->setConstant(0.0);
+      cls.hit_obstacle->setConstant(0.0);
     }
 
     // Measure Layer Initialization Time
@@ -465,6 +472,9 @@ private:
     // double min_y = std::numeric_limits<double>::infinity();
     // double max_x = -std::numeric_limits<double>::infinity();
     // double max_y = -std::numeric_limits<double>::infinity();
+
+    // Vector to store visited map indices
+    std::unordered_set<grid_map::Index> visited_indices;
 
     // Point Iteration
     for (const auto &point : transformed_cloud.points) 
@@ -495,9 +505,10 @@ private:
       // TODO: Remove this
       grid_map::Index idx;
       map_.getIndex(pos, idx);
-      float min_height = map_.at("min_height", idx);
+      visited_indices.insert(idx);
+      float min_height = (*min_height_)(idx(0), idx(1));
       if (std::isnan(min_height) || point.z < min_height) {
-        map_.at("min_height", idx) = point.z;
+        (*min_height_)(idx(0), idx(1)) = point.z;
       }
       
       // Update class hit count
@@ -505,13 +516,13 @@ private:
       if(map_.exists("min_height_smooth")) {
 
         // Ground Layer
-        if(point.z < map_.at("min_height_smooth", idx) + max_veg_height_) {
+        if(point.z < (*min_height_smooth_)(idx(0), idx(1)) + max_veg_height_) {
           map_.at(cls + "_ground_hit", idx) += 1.0;
         }
 
         // Obstacle Layer
-        else if(point.z >= map_.at("min_height_smooth", idx) + max_veg_height_ 
-        && point.z < map_.at("min_height_smooth", idx) + robot_height_) {
+        else if(point.z >= (*min_height_smooth_)(idx(0), idx(1)) + max_veg_height_ 
+        && point.z < (*min_height_smooth_)(idx(0), idx(1)) + robot_height_) {
           map_.at(cls + "_obstacle_hit", idx) += 1.0;
         }
 
@@ -528,10 +539,10 @@ private:
 
           if (point.z > (min_height + max_veg_height_) 
           && point.z < (min_height + robot_height_)) {
-            if (std::isnan(map_.at("obstacle_zone", idx))) {
-              map_.at("obstacle_zone", idx) = 0.0;
+            if (std::isnan((*obstacle_zone_)(idx(0), idx(1)))) {
+              (*obstacle_zone_)(idx(0), idx(1)) = 0.0;
             }
-            map_.at("obstacle_zone", idx) += 1.0;
+            (*obstacle_zone_)(idx(0), idx(1)) += 1.0;
             // RCLCPP_INFO(this->get_logger(), "obstacle zone: %f", point.z);
           }
         }
@@ -543,10 +554,10 @@ private:
     RCLCPP_DEBUG(this->get_logger(), "Point iteration took %f ms", std::chrono::duration<double, std::milli>(point_iteration_time - layer_initialization_time).count());
 
     // Reset probabilities
-    for (auto name : class_names_) {
-      map_[name + "_ground_prob"].setConstant(0.0);
-      map_[name + "_obstacle_prob"].setConstant(0.0);
-      // map_[name + "_sky_prob"].setConstant(0.0);
+    for (auto cls : cls_) {
+      cls.prob_ground->setConstant(0.0);
+      cls.prob_obstacle->setConstant(0.0);
+      // cls.prob_sky->setConstant(0.0);
     }
 
     // center of your AABB
@@ -561,17 +572,9 @@ private:
     // bool success;
     // grid_map::GridMap submap = map_.getSubmap(submap_center, submap_length, success);
 
-    grid_map::Matrix& obstacle_zone = map_["obstacle_zone"];
-    grid_map::Matrix& ground_class = map_["ground_class"];
-    grid_map::Matrix& obstacle_class = map_["obstacle_class"];
-    grid_map::Matrix& min_height = map_["min_height"];
-    grid_map::Matrix& min_height_old = map_["min_height_old"];
-
-    // Map Iteration 1
-    for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) 
-    {
-      //grid_map::Index index = *it;
-      const std::size_t i = it.getLinearIndex();
+    // Map Iteration 1 (only for the cells that have been visited)
+    for (const auto &idx : visited_indices) {
+      const std::size_t i = idx(0) + idx(1) * map_.getSize()(0);
 
       // Calculate the total hits across all classes at this cell
       float total_ground_hits = 0.0;
@@ -630,23 +633,23 @@ private:
       }
 
       // Set obstacle zone to nan if too few (noise)
-      if (obstacle_zone(i) < 5.0) {
-        obstacle_zone(i) = std::numeric_limits<float>::quiet_NaN();
+      if ((*obstacle_zone_)(i) < 5.0) {
+        (*obstacle_zone_)(i) = std::numeric_limits<float>::quiet_NaN();
       }
 
       // Set the ground class rgb
       if (max_log_odd_ground > 0) {
-        ground_class(i) = packRGB(max_class_rgb_ground[0], max_class_rgb_ground[1], max_class_rgb_ground[2]);
+        (*ground_class_)(i) = packRGB(max_class_rgb_ground[0], max_class_rgb_ground[1], max_class_rgb_ground[2]);
       }
 
       // Set the obstacle class rgb
       if (max_log_odd_obstacle > 0) {
-        obstacle_class(i) = packRGB(max_class_rgb_obstacle[0], max_class_rgb_obstacle[1], max_class_rgb_obstacle[2]);
+        (*obstacle_class_)(i) = packRGB(max_class_rgb_obstacle[0], max_class_rgb_obstacle[1], max_class_rgb_obstacle[2]);
       }
 
       // If min height is NaN, use value from the old layer
-      if (std::isnan(min_height(i))) {
-        min_height(i) = min_height_old(i);
+      if (std::isnan((*min_height_)(i))) {
+        (*min_height_)(i) = (*min_height_old_)(i);
       }
     }
 
