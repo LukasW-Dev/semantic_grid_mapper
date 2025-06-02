@@ -112,6 +112,7 @@ private:
   grid_map::Matrix* obstacle_zone_;
   grid_map::Matrix* obstacle_class_;
   grid_map::Matrix* min_height_old_;
+  grid_map::Matrix* obstacle_clearance_;
 
 public:
   SemanticGridMapper()
@@ -238,6 +239,10 @@ public:
     min_height_ = &map_["min_height"];
     min_height_old_ = &map_["min_height_old"];
     min_height_smooth_ = &map_["min_height_smooth"];
+
+    map_.add("obstacle_clearance");
+    map_["obstacle_clearance"].setConstant(0.0);
+    obstacle_clearance_ = &map_["obstacle_clearance"];
 
     map_.add("obstacle_zone");
     map_["obstacle_zone"].setConstant(0.0); // 0 = no obstacle, 100 = obstacle
@@ -394,25 +399,11 @@ private:
         (*min_height_)(idx(0), idx(1)) = point.z;
       }
 
-      // Update obstacle zone layer
-      // min_height_val = (*min_height_smooth_)(idx(0), idx(1));
-      // float float_rgb = (*ground_class_)(idx(0), idx(1));
-      // uint8_t r, g, b;
-      // unpackRGB(float_rgb, r, g, b);
-      // std::string cls = color_to_class_[std::make_tuple(r, g, b)];
-      // if (!std::isnan(min_height_val)) {
-      //   if (cls == "tree-foliage" || cls == "tree-trunk") {
-      //     if (point.z > (min_height_val + max_veg_height_)
-      //         && point.z < (min_height_val + robot_height_)) {
-      //       if (std::isnan((*obstacle_zone_)(idx(0), idx(1)))) {
-      //         (*obstacle_zone_)(idx(0), idx(1)) = 0.0;
-      //       }
-      //       (*obstacle_zone_)(idx(0), idx(1)) += 1.0;
-      //       // RCLCPP_INFO(this->get_logger(), "obstacle zone: %f", point.z);
-      //     }
-      //   }
-      // }
-      
+      // Update obstacle clearance layer
+      if(point.z > (*min_height_)(idx(0), idx(1)) + max_veg_height_ && 
+         point.z < (*min_height_)(idx(0), idx(1)) + robot_height_) {
+        (*obstacle_clearance_)(idx(0), idx(1)) += 1.0;
+      }
     }
   }
 
@@ -535,21 +526,6 @@ private:
         // }
       }
 
-      // Update obstacle zone layer
-      // if (!std::isnan(min_height)) {
-      //   if (cls == "tree-foliage" || cls == "tree-trunk") {
-      //     //RCLCPP_INFO(this->get_logger(), "z %f, min_height %f, max_veg_height %f, robot_height %f", point.z, min_height, max_veg_height_, robot_height_);
-
-      //     if (point.z > (min_height + max_veg_height_) 
-      //     && point.z < (min_height + robot_height_)) {
-      //       if (std::isnan((*obstacle_zone_)(idx(0), idx(1)))) {
-      //         (*obstacle_zone_)(idx(0), idx(1)) = 0.0;
-      //       }
-      //       (*obstacle_zone_)(idx(0), idx(1)) += 1.0;
-      //       // RCLCPP_INFO(this->get_logger(), "obstacle zone: %f", point.z);
-      //     }
-      //   }
-      // }
     }
 
     // Measure Point Iteration Time
@@ -562,18 +538,6 @@ private:
       cls.prob_obstacle->setConstant(0.0);
       // cls.prob_sky->setConstant(0.0);
     }
-
-    // center of your AABB
-    // double center_x = 0.5 * (min_x + max_x);
-    // double center_y = 0.5 * (min_y + max_y);
-    // grid_map::Length length(max_x - min_x, max_y - min_y);
-
-
-    // // Define the submap region based on the bounding box of the incoming point cloud
-    // grid_map::Position submap_center(center_x, center_y);
-    // grid_map::Length submap_length = length;
-    // bool success;
-    // grid_map::GridMap submap = map_.getSubmap(submap_center, submap_length, success);
 
     // Map Iteration 1 (only for the cells that have been visited)
     for (const auto &idx : visited_indices) {
@@ -645,6 +609,11 @@ private:
         (*ground_class_)(i) = packRGB(max_class_rgb_ground[0], max_class_rgb_ground[1], max_class_rgb_ground[2]);
       }
 
+      // If obstacle zon but clearance is 0, set to 0
+      if( (*obstacle_zone_)(i) > 0 && (*obstacle_clearance_)(i) == 0.0) {
+        (*obstacle_zone_)(i) = 0.0;
+      }
+
       // Set the obstacle class rgb
       if (max_log_odd_obstacle > 0) {
         (*obstacle_class_)(i) = packRGB(max_class_rgb_obstacle[0], max_class_rgb_obstacle[1], max_class_rgb_obstacle[2]);
@@ -655,6 +624,7 @@ private:
       if (std::isnan((*min_height_)(i))) {
         (*min_height_)(i) = (*min_height_old_)(i);
       }
+
     }
 
     // Measure Map Iteration Time
@@ -692,6 +662,7 @@ private:
     map_["min_height_old"] = map_["min_height"];
     map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
     // map_["obstacle_zone"].setConstant(std::numeric_limits<float>::quiet_NaN());
+    map_["obstacle_clearance"].setConstant(0.0);
 
     // Measure Publishing Time
     auto publishing_time = std::chrono::steady_clock::now();
