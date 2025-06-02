@@ -459,11 +459,6 @@ private:
     auto layer_initialization_time = std::chrono::steady_clock::now();
     RCLCPP_DEBUG(this->get_logger(), "Layer initialization took %f ms", std::chrono::duration<double, std::milli>(layer_initialization_time - pointcloud_transform_time).count());
 
-    // double min_x = std::numeric_limits<double>::infinity();
-    // double min_y = std::numeric_limits<double>::infinity();
-    // double max_x = -std::numeric_limits<double>::infinity();
-    // double max_y = -std::numeric_limits<double>::infinity();
-
     // Vector to store visited map indices
     std::unordered_set<grid_map::Index> visited_indices;
 
@@ -471,11 +466,6 @@ private:
     for (const auto &point : transformed_cloud.points) 
     {
       std::tuple<uint8_t, uint8_t, uint8_t> color{point.r, point.g, point.b};
-
-      // min_x = std::min(min_x, static_cast<double>(point.x));
-      // min_y = std::min(min_y, static_cast<double>(point.y));
-      // max_x = std::max(max_x, static_cast<double>(point.x));
-      // max_y = std::max(max_y, static_cast<double>(point.y));
 
       // Reject points with no color (should actually not happen)
       if (color_to_class_.count(color) == 0)
@@ -497,10 +487,10 @@ private:
       grid_map::Index idx;
       map_.getIndex(pos, idx);
       visited_indices.insert(idx);
-      float min_height = (*min_height_)(idx(0), idx(1));
-      if (std::isnan(min_height) || point.z < min_height) {
-        (*min_height_)(idx(0), idx(1)) = point.z;
-      }
+      //float min_height = (*min_height_)(idx(0), idx(1));
+      // if (std::isnan(min_height) || point.z < min_height) {
+      //   (*min_height_)(idx(0), idx(1)) = point.z;
+      // }
       
       // Update class hit count
       std::string cls = color_to_class_[color];
@@ -596,7 +586,6 @@ private:
           max_log_odd_obstacle = log_odds_obstacle; 
           max_class_rgb_obstacle = cls.rgb; 
         }
-
       }
 
       // Set obstacle zone to nan if too few (noise)
@@ -609,11 +598,6 @@ private:
         (*ground_class_)(i) = packRGB(max_class_rgb_ground[0], max_class_rgb_ground[1], max_class_rgb_ground[2]);
       }
 
-      // If obstacle zon but clearance is 0, set to 0
-      if( (*obstacle_zone_)(i) > 0 && (*obstacle_clearance_)(i) == 0.0) {
-        (*obstacle_zone_)(i) = 0.0;
-      }
-
       // Set the obstacle class rgb
       if (max_log_odd_obstacle > 0) {
         (*obstacle_class_)(i) = packRGB(max_class_rgb_obstacle[0], max_class_rgb_obstacle[1], max_class_rgb_obstacle[2]);
@@ -623,6 +607,16 @@ private:
       // If min height is NaN, use value from the old layer
       if (std::isnan((*min_height_)(i))) {
         (*min_height_)(i) = (*min_height_old_)(i);
+      }
+    }
+
+    // Map Iteration 2 (iterate over whole map)
+    for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
+      const size_t i = it.getLinearIndex();
+
+      // If obstacle zon but clearance is 0, set to 0
+      if( (*obstacle_zone_)(i) > 0 && (*obstacle_clearance_)(i) == 0.0) {
+        (*obstacle_zone_)(i) = 0.0;
       }
 
     }
