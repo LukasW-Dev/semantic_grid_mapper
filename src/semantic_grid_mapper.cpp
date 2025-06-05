@@ -651,7 +651,9 @@ private:
 
     grid_map_msgs::msg::GridMap map_msg;
     map_msg = *grid_map::GridMapRosConverter::toMessage(map_);
-    map_msg.header.stamp = msg->header.stamp;
+    // use stamp of last map update
+    map_msg.header.stamp = robot_transform.header.stamp;
+    // map_msg.header.stamp = msg->header.stamp;
     grid_map_pub_->publish(map_msg);
     map_["min_height_old"] = map_["min_height"];
     map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
@@ -661,6 +663,13 @@ private:
     // Measure Publishing Time
     auto publishing_time = std::chrono::steady_clock::now();
     RCLCPP_INFO(this->get_logger(), "Publishing took %f ms", std::chrono::duration<double, std::milli>(publishing_time - timestamp).count());
+
+    // Calculate semantic latency (robot_transform_stamp - msg->header.stamp)
+    rclcpp::Time robot_time(robot_transform.header.stamp);
+    rclcpp::Time msg_time(msg->header.stamp);
+    auto semantic_latency = robot_time - msg_time;
+    RCLCPP_INFO(this->get_logger(), "Semantic latency: %f ms", semantic_latency.seconds() * 1000.0);
+
   }
 
   void applyFilterChain() {
