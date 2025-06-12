@@ -482,15 +482,10 @@ private:
         continue;
       }
 
-      // Update the min height layer
-      // TODO: Remove this
+
       grid_map::Index idx;
       map_.getIndex(pos, idx);
       visited_indices.insert(idx);
-      //float min_height = (*min_height_)(idx(0), idx(1));
-      // if (std::isnan(min_height) || point.z < min_height) {
-      //   (*min_height_)(idx(0), idx(1)) = point.z;
-      // }
       
       // Update class hit count
       std::string cls = color_to_class_[color];
@@ -624,8 +619,6 @@ private:
     // Measure Map Iteration Time
     auto map_iteration_time = std::chrono::steady_clock::now();
     RCLCPP_DEBUG(this->get_logger(), "Map iteration took %f ms", std::chrono::duration<double, std::milli>(map_iteration_time - point_iteration_time).count());
-
-
 
     // Fill the obstacle zone
     //markAlphaShapeObstacleClusters(map_, "obstacle_zone", 2, this->get_logger());
