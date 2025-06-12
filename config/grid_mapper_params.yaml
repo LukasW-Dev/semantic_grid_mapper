@@ -6,7 +6,7 @@ semantic_grid_mapper_node:
     log_odd_min: -100.0
     log_odd_max: 100.0
     map_frame_id: "map"
-    use_sim_time: true
+    use_sim_time: false
     semantic_pointcloud_topic: "/rgb_cloud"
     pointcloud_topic1: "/left_laser/pandar"
     pointcloud_topic2: "/right_laser/pandar"
