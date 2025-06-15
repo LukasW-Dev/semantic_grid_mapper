@@ -117,6 +117,8 @@ private:
 
   rclcpp::Time last_update_stamp_;
 
+  int pc_updates_;
+
 public:
   SemanticGridMapper()
       : Node("semantic_grid_mapper"), tf_buffer_(this->get_clock()),
@@ -310,8 +312,10 @@ public:
 
     // Initialize Timer with 500ms period
     update_timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(1000),
+        std::chrono::milliseconds(500),
         std::bind(&SemanticGridMapper::applyFilterChain, this));
+
+    pc_updates_ = 0;
 
     RCLCPP_INFO(this->get_logger(), "Semantic Grid Mapper initialized.");
   }
@@ -350,7 +354,10 @@ private:
 
   void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
 
-    // Move the whole map with the robot
+    pc_updates_++;
+
+    //=================================================================================================================
+    // 1) Move the whole map with the robot
     geometry_msgs::msg::TransformStamped robot_transform;
     try {
       robot_transform = tf_buffer_.lookupTransform(map_frame_id_, robot_base_frame_id_, tf2::TimePointZero);
@@ -363,55 +370,76 @@ private:
       return;
     }
 
-    // Get transform from msg frame to map frame
+    //=================================================================================================================
+    // 2) Transform the points from sensor frame into robot frame
+    pcl::PointCloud<pcl::PointXYZ> pcl_cloud;
+    pcl::fromROSMsg(*msg, pcl_cloud);
     geometry_msgs::msg::TransformStamped pc_transform;
     try {
-      pc_transform = tf_buffer_.lookupTransform(map_frame_id_, msg->header.frame_id,
-                                               tf2::TimePointZero);
+      pc_transform = tf_buffer_.lookupTransform(robot_base_frame_id_, msg->header.frame_id, tf2::TimePointZero);
     } catch (const tf2::TransformException &ex) {
       RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
       return;
     }
+    pcl::PointCloud<pcl::PointXYZ> transformed_cloud;
+    Eigen::Affine3d eigen_transform = tf2::transformToEigen(pc_transform.transform);
+    pcl::transformPointCloud(pcl_cloud, transformed_cloud, eigen_transform);
 
-    // Create PCL Cloud
-    pcl::PointCloud<pcl::PointXYZ> pcl_cloud;
-    pcl::fromROSMsg(*msg, pcl_cloud);
-
-    // filter points
-
-    // check if lidar is top_os
-    bool is_top_os = false;
-    if(msg->header.frame_id == "top_os_lidar") {
-      is_top_os = true;
-    }
+    //=================================================================================================================
+    // 3) Filter points
+    // identify lidar
+    bool top_ouster = msg->header.frame_id == "top_os_lidar";
+    bool front_ouster = msg->header.frame_id == "front_os_lidar";
 
     pcl::PointCloud<pcl::PointXYZ> filtered_cloud;
-    for (const auto &point : pcl_cloud.points) {
+    for (const auto &point : transformed_cloud.points) {
 
       // Points too close to the robot are ignored
-      if (!std::hypot(point.x, point.y, point.z) >= 1.5) {
+      if (!(std::hypot(point.x, point.y, point.z) >= 1.5)) {
         continue;
       }
 
-      // If top_os_lidar, filter points in angle +- 20 degrees
-      if (is_top_os) {
+      // ========== Top Ouster ==========
+      // filter points in angle +- 20 degrees
+      if (top_ouster) {
         double angle = std::atan2(point.y, point.x);
         if (angle < -0.3490658503988659 || angle > 0.3490658503988659) { // -20 to +20 degrees
           continue;
         }
       }
+
+      // filter points too close to the robot, since top ouster does not reach the ground within 3.5m radius
+      if (top_ouster && std::hypot(point.x, point.y, point.z) < 3.5) {
+        continue;
+      }
+
+      // ========== Front Ouster ==========
+      // If front ouster, filter points in negative x direction
+      if (front_ouster && point.x < 0) {
+        continue;
+      }
+
       filtered_cloud.push_back(point);
 
     }
-    pcl_cloud = filtered_cloud;
+    transformed_cloud = filtered_cloud;
 
-    // Transform the points into map frame
-    pcl::PointCloud<pcl::PointXYZ> transformed_cloud;
-    Eigen::Affine3d eigen_transform = tf2::transformToEigen(pc_transform.transform);
-    pcl::transformPointCloud(pcl_cloud, transformed_cloud, eigen_transform);
+    //=================================================================================================================
+    // 4) Transform from the robot frame to the map frame
+    geometry_msgs::msg::TransformStamped map_transform;
+    try {
+      map_transform = tf_buffer_.lookupTransform(map_frame_id_, robot_base_frame_id_, tf2::TimePointZero);
+    } catch (const tf2::TransformException &ex) {
+      RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
+      return;
+    }
+    pcl::PointCloud<pcl::PointXYZ> map_cloud;
+    Eigen::Affine3d robot_eigen_transform = tf2::transformToEigen(map_transform.transform);
+    pcl::transformPointCloud(transformed_cloud, map_cloud, robot_eigen_transform);
 
+    //=================================================================================================================
     // Point Iteration
-    for (const auto &point : transformed_cloud.points) {
+    for (const auto &point : map_cloud.points) {
 
       // Check if the point is inside the map
       grid_map::Position pos(point.x, point.y);
@@ -641,6 +669,9 @@ private:
   }
 
   void applyFilterChain() {
+
+    RCLCPP_INFO(this->get_logger(), "%d PC updates", pc_updates_);
+    pc_updates_ = 0;
 
     // Map Iteration (iterate over whole map)
     for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
