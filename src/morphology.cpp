@@ -25,14 +25,34 @@ void morphologicalClose3x3(grid_map::GridMap& map, const std::string& layer)
   // Temporary storage for dilation result:
   grid_map::Matrix dilated(rows, cols);
 
-  // --- DILATION (3×3 max filter) ---
-  // For each cell (i,j), look at all neighbors (i+di, j+dj) with di,dj ∈ {-1,0,1}.
+  // // --- DILATION (3×3 max filter) ---
+  // // For each cell (i,j), look at all neighbors (i+di, j+dj) with di,dj ∈ {-1,0,1}.
+  // // dilated(i,j) = max{ input(n_i, n_j) : valid neighbors }.
+  // for (int i = 0; i < rows; ++i) {
+  //   for (int j = 0; j < cols; ++j) {
+  //     float maxVal = 0.0f; // because occupied=1000, free=0 → max starts at 0
+  //     for (int di = -1; di <= 1; ++di) {
+  //       for (int dj = -1; dj <= 1; ++dj) {
+  //         int ni = i + di;
+  //         int nj = j + dj;
+  //         if (ni >= 0 && ni < rows && nj >= 0 && nj < cols) {
+  //           // compare with each neighbor's value
+  //           maxVal = std::max(maxVal, input(ni, nj));
+  //         }
+  //       }
+  //     }
+  //     dilated(i, j) = maxVal;
+  //   }
+  // }
+
+  // --- DILATION (4×4 max filter) ---
+  // For each cell (i,j), look at all neighbors (i+di, j+dj) with di,dj ∈ {-2,-1,0,1}.
   // dilated(i,j) = max{ input(n_i, n_j) : valid neighbors }.
   for (int i = 0; i < rows; ++i) {
     for (int j = 0; j < cols; ++j) {
       float maxVal = 0.0f; // because occupied=1000, free=0 → max starts at 0
-      for (int di = -1; di <= 1; ++di) {
-        for (int dj = -1; dj <= 1; ++dj) {
+      for (int di = -2; di <= 1; ++di) {
+        for (int dj = -2; dj <= 1; ++dj) {
           int ni = i + di;
           int nj = j + dj;
           if (ni >= 0 && ni < rows && nj >= 0 && nj < cols) {

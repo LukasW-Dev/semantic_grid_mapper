@@ -1,0 +1,52 @@
+semantic_grid_mapper_node:
+  ros__parameters:
+    resolution: 0.1
+    length: 14.0
+    height: 14.0
+    log_odd_min: -1000.0
+    log_odd_max: 1000.0
+    map_frame_id: "map"
+    use_sim_time: false
+    semantic_pointcloud_topic: "/rgb_cloud"
+    pointcloud_topic1: "/front_os/points"
+    pointcloud_topic2: "/top_os/points"
+    grid_map_topic: "semantic_grid_map"
+    robot_base_frame_id: "base_footprint"
+    robot_height: 1.2
+    max_veg_height: 0.4
+
+    filters:
+      # filter1:
+        # name: buffer_normalizer
+        # type: gridMapFilters/BufferNormalizerFilter
+
+      # filter2: # Duplicate layer.
+      #   name: duplicate
+      #   type: gridMapFilters/DuplicationFilter
+      #   params:
+      #     input_layer: ...
+      #     output_layer: ...
+
+      # filter2:  # Delete color layer.
+      #   name: delete_original_layers
+      #   type: gridMapFilters/DeletionFilter
+      #   params: 
+      #     layers: [color] # List of layers.
+
+      # filter3:  # Fill holes in the map with inpainting.
+      #   name: inpaint
+      #   type: gridMapCv/InpaintFilter
+      #   params:
+      #     input_layer: elevation
+      #     output_layer: elevation_inpainted
+      #     radius: 0.05
+
+      filter1:  # Reduce noise with a radial blurring filter.
+        name: mean_in_radius
+        type: gridMapFilters/MeanInRadiusFilter
+        params:
+          input_layer: min_height
+          output_layer: min_height_smooth
+          radius: 0.45
+
+    

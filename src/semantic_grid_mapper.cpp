@@ -103,7 +103,8 @@ private:
   filters::FilterChain<grid_map::GridMap> filterChain_;
   std::string filterChainParametersName_;
 
-  std::vector<ClassLayers> cls_;
+  //std::vector<ClassLayers> cls_;
+  std::unordered_map<std::string, ClassLayers> cls_;
   rclcpp::TimerBase::SharedPtr update_timer_;
 
   grid_map::Matrix* min_height_;
@@ -113,6 +114,8 @@ private:
   grid_map::Matrix* obstacle_class_;
   grid_map::Matrix* min_height_old_;
   grid_map::Matrix* obstacle_clearance_;
+
+  rclcpp::Time last_update_stamp_;
 
 public:
   SemanticGridMapper()
@@ -259,16 +262,20 @@ public:
       // map_[name + "_sky"].setConstant(0.0); // log-odds 0 => p = 0.5
     }
 
+    rclcpp::QoS qos_profile(rclcpp::KeepLast(1));
+    qos_profile.durability(RMW_QOS_POLICY_DURABILITY_VOLATILE);
+    qos_profile.reliability(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT);
+
     semantic_cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-        semantic_pointcloud_topic_, 0,
+        semantic_pointcloud_topic_, qos_profile,
         std::bind(&SemanticGridMapper::semanticPointCloudCallback, this, _1));
 
     pointcloud_sub1_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-        pointcloud_topic1_, 0,
+        pointcloud_topic1_, qos_profile,
         std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
 
     pointcloud_sub2_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-        pointcloud_topic2_, 0,
+        pointcloud_topic2_, qos_profile,
         std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
 
     grid_map_pub_ =
@@ -286,9 +293,8 @@ public:
       return;
     }
 
-    cls_.reserve(class_names_.size());
     for (auto const & name : class_names_) {
-      cls_.push_back({
+      cls_[name] = {
         &map_.get(name + "_ground_hit"),
         &map_.get(name + "_obstacle_hit"),
         //&map_.get(name + "_sky_hit"),
@@ -299,33 +305,39 @@ public:
         &map_.get(name + "_obstacle"),
         //&map_.get(name + "_sky"),
         class_to_color_[name]
-        });
+      };
     }
 
-    // // Initialize Timer with 500ms period
-    // update_timer_ = this->create_wall_timer(
-    //     std::chrono::milliseconds(500),
-    //     std::bind(&SemanticGridMapper::applyFilterChain, this));
+    // Initialize Timer with 500ms period
+    update_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(1000),
+        std::bind(&SemanticGridMapper::applyFilterChain, this));
 
     RCLCPP_INFO(this->get_logger(), "Semantic Grid Mapper initialized.");
   }
 
 private:
-  double prob_to_log_odds(double p) { return std::log(p / (1.0 - p)); }
-
-  double log_odds_to_prob(double l) {
-    return 1.0 - (1.0 / (1.0 + std::exp(l)));
+  double prob_to_log_odds(double p) {
+    p = std::clamp(p, 1e-6, 1.0 - 1e-6);
+    return std::log(p / (1.0 - p));
   }
+
+  // double log_odds_to_prob(double l) {
+  //   return 1.0 - (1.0 / (1.0 + std::exp(l)));
+  // }
 
   double update_log_odds(double old_l, double meas_l) {
     // If new cell (not yet initialized, only new value)
     if (std::isnan(old_l)) {
-      return std::clamp(meas_l, log_odd_min_, log_odd_max_);
+      return meas_l;
+    //   return std::clamp(meas_l, log_odd_min_, log_odd_max_);
     }
 
-    // Update log-odds and clamp to range [-10, 10]
+
+    // Update log-odds and clamp to range 
     double updated_l = old_l + meas_l;
-    return std::clamp(updated_l, log_odd_min_, log_odd_max_);
+    return updated_l;
+    //return std::clamp(updated_l, log_odd_min_, log_odd_max_);
   }
 
   float packRGB(uint8_t r, uint8_t g, uint8_t b) {
@@ -365,15 +377,31 @@ private:
     pcl::PointCloud<pcl::PointXYZ> pcl_cloud;
     pcl::fromROSMsg(*msg, pcl_cloud);
 
-    // remove the points which are too close to the robot
+    // filter points
+
+    // check if lidar is top_os
+    bool is_top_os = false;
+    if(msg->header.frame_id == "top_os_lidar") {
+      is_top_os = true;
+    }
+
     pcl::PointCloud<pcl::PointXYZ> filtered_cloud;
     for (const auto &point : pcl_cloud.points) {
-      if (std::hypot(point.x, point.y, point.z) >= 1.5) {
-        filtered_cloud.push_back(point);
+
+      // Points too close to the robot are ignored
+      if (!std::hypot(point.x, point.y, point.z) >= 1.5) {
+        continue;
       }
-      else {
-        RCLCPP_DEBUG(this->get_logger(), "Point too close to robot, ignoring: (%f, %f, %f)", point.x, point.y, point.z);
+
+      // If top_os_lidar, filter points in angle +- 20 degrees
+      if (is_top_os) {
+        double angle = std::atan2(point.y, point.x);
+        if (angle < -0.3490658503988659 || angle > 0.3490658503988659) { // -20 to +20 degrees
+          continue;
+        }
       }
+      filtered_cloud.push_back(point);
+
     }
     pcl_cloud = filtered_cloud;
 
@@ -405,6 +433,8 @@ private:
         (*obstacle_clearance_)(idx(0), idx(1)) += 1.0;
       }
     }
+
+    last_update_stamp_ = msg->header.stamp;
   }
 
   void semanticPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
@@ -450,7 +480,7 @@ private:
 
     
     // Reset Hit Counts
-    for (auto cls : cls_) {
+    for (auto& [name, cls] : cls_) {
       cls.hit_ground->setConstant(0.0);
       cls.hit_obstacle->setConstant(0.0);
     }
@@ -472,7 +502,7 @@ private:
         continue;
 
       // Reject points with low confidence (TODO: should this be done already in fusion?)
-      if (point.label < 70 ) {
+      if (point.label < 90 ) {
         continue;
       }
       
@@ -493,20 +523,21 @@ private:
       // }
       
       // Update class hit count
-      std::string cls = color_to_class_[color];
+      std::string cls_name = color_to_class_[color];
+      
       if(map_.exists("min_height_smooth")) {
 
         // Ground Layer
         if(point.z < (*min_height_smooth_)(idx(0), idx(1)) + max_veg_height_) {
-          map_.at(cls + "_ground_hit", idx) += 1.0;
+          (*(cls_[cls_name].hit_ground))(idx(0), idx(1)) += 1.0;
         }
 
         // Obstacle Layer
         else if(point.z >= (*min_height_smooth_)(idx(0), idx(1)) + max_veg_height_ 
         && point.z < (*min_height_smooth_)(idx(0), idx(1)) + robot_height_) {
           // only add hit if class is not grass or dirt or gravel
-          if (cls != "grass" && cls != "dirt" && cls != "gravel" && cls != "mud" && cls != "water") {
-            map_.at(cls + "_obstacle_hit", idx) += 1.0;
+          if (cls_name != "grass" && cls_name != "dirt" && cls_name != "gravel" && cls_name != "mud" && cls_name != "water") {
+            (*(cls_[cls_name].hit_obstacle))(idx(0), idx(1)) += 1.0;
           }
         }
 
@@ -523,7 +554,7 @@ private:
     RCLCPP_DEBUG(this->get_logger(), "Point iteration took %f ms", std::chrono::duration<double, std::milli>(point_iteration_time - layer_initialization_time).count());
 
     // Reset probabilities
-    for (auto cls : cls_) {
+    for (auto& [name, cls] : cls_) {
       cls.prob_ground->setConstant(0.0);
       cls.prob_obstacle->setConstant(0.0);
       // cls.prob_sky->setConstant(0.0);
@@ -538,7 +569,7 @@ private:
       float total_obstacle_hits = 0.0;
       // float total_sky_hits = 0.0;
 
-      for(auto &cls : cls_) {
+      for (auto& [name, cls] : cls_) {
         // Ground Layer
         total_ground_hits += (*(cls.hit_ground))(i);
         // Obstacle Layer
@@ -556,7 +587,7 @@ private:
       // double max_log_odd_sky = log_odd_min_;
 
       // Calculate normalized probabilities and store them
-      for (auto &cls : cls_) {
+      for (auto& [name, cls] : cls_) {
         
         // Ground Layer
         float prob_ground = total_ground_hits ? (*(cls.hit_ground))(i) / total_ground_hits : 0.0;
@@ -569,6 +600,7 @@ private:
         // // Sky Layer
         // (*(cls.prob_sky))(index(0), index(1)) = total_sky_hits ? cls.hit_sky->at(index) / total_sky_hits : 0.0;
 
+        // Print hist_ground before and after update
         double log_odds_ground = update_log_odds(
             (*(cls.hist_ground))(i), prob_to_log_odds(prob_ground));
 
@@ -588,11 +620,6 @@ private:
         }
       }
 
-      // Set obstacle zone to nan if too few (noise)
-      if ((*obstacle_zone_)(i) < 1.0) {
-        (*obstacle_zone_)(i) = std::numeric_limits<float>::quiet_NaN();
-      }
-
       // Set the ground class rgb
       if (max_log_odd_ground > 0) {
         (*ground_class_)(i) = packRGB(max_class_rgb_ground[0], max_class_rgb_ground[1], max_class_rgb_ground[2]);
@@ -601,30 +628,44 @@ private:
       // Set the obstacle class rgb
       if (max_log_odd_obstacle > 0) {
         (*obstacle_class_)(i) = packRGB(max_class_rgb_obstacle[0], max_class_rgb_obstacle[1], max_class_rgb_obstacle[2]);
-        (*obstacle_zone_)(i) = 1000; // Mark as obstacle zone
+        //(*obstacle_zone_)(i) = 1000; // Mark as obstacle zone
       }
+
+      // If min height is NaN, use value from the old layer
+      // if (std::isnan((*min_height_)(i))) {
+      //   (*min_height_)(i) = (*min_height_old_)(i);
+      // }
+    }
+
+    last_update_stamp_ = msg->header.stamp;
+  }
+
+  void applyFilterChain() {
+
+    // Map Iteration (iterate over whole map)
+    for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
+      const size_t i = it.getLinearIndex();
 
       // If min height is NaN, use value from the old layer
       if (std::isnan((*min_height_)(i))) {
         (*min_height_)(i) = (*min_height_old_)(i);
       }
-    }
 
-    // Map Iteration 2 (iterate over whole map)
-    for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
-      const size_t i = it.getLinearIndex();
-
-      // If obstacle zon but clearance is 0, set to 0
-      if( (*obstacle_zone_)(i) > 0 && (*obstacle_clearance_)(i) == 0.0) {
-        (*obstacle_zone_)(i) = 0.0;
+      // If clearance is not 0 and obstacle_class is set, set obstacle_zone to 1000
+      if ((*obstacle_clearance_)(i) > 0.0 && (*obstacle_class_)(i) != -1.0) {
+        (*obstacle_zone_)(i) = 1000.0; // Mark as obstacle zone
+      } else {
+        (*obstacle_zone_)(i) = 0.0; // No obstacle zone
       }
 
+      // If obstacle zone but clearance is 0, set to 0
+      // if( (*obstacle_zone_)(i) > 0 && (*obstacle_clearance_)(i) == 0.0) {
+      //   (*obstacle_zone_)(i) = 0.0;
+      // }
     }
 
     // Measure Map Iteration Time
     auto map_iteration_time = std::chrono::steady_clock::now();
-    RCLCPP_DEBUG(this->get_logger(), "Map iteration took %f ms", std::chrono::duration<double, std::milli>(map_iteration_time - point_iteration_time).count());
-
 
 
     // Fill the obstacle zone
@@ -651,25 +692,13 @@ private:
 
     grid_map_msgs::msg::GridMap map_msg;
     map_msg = *grid_map::GridMapRosConverter::toMessage(map_);
-    map_msg.header.stamp = msg->header.stamp;
+    map_msg.header.stamp = this->last_update_stamp_;
     grid_map_pub_->publish(map_msg);
     map_["min_height_old"] = map_["min_height"];
     map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
     // map_["obstacle_zone"].setConstant(std::numeric_limits<float>::quiet_NaN());
     map_["obstacle_clearance"].setConstant(0.0);
 
-    // Measure Publishing Time
-    auto publishing_time = std::chrono::steady_clock::now();
-    RCLCPP_INFO(this->get_logger(), "Publishing took %f ms", std::chrono::duration<double, std::milli>(publishing_time - timestamp).count());
-  }
-
-  void applyFilterChain() {
-    grid_map::GridMap filtered_map;
-    if (!filterChain_.update(map_, filtered_map)) {
-      RCLCPP_ERROR(this->get_logger(), "Could not update the grid map filter chain!");
-      return;
-    }
-    map_["min_height_smooth"] = filtered_map["min_height_smooth"];
   }
 
 };
