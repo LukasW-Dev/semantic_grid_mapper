@@ -1,8 +1,8 @@
 semantic_grid_mapper_node:
   ros__parameters:
     resolution: 0.1
-    length: 14.0
-    height: 14.0
+    length: 16.0
+    height: 16.0
     log_odd_min: -1000.0
     log_odd_max: 1000.0
     map_frame_id: "map"
@@ -10,10 +10,12 @@ semantic_grid_mapper_node:
     semantic_pointcloud_topic: "/rgb_cloud"
     pointcloud_topic1: "/front_os/points"
     pointcloud_topic2: "/top_os/points"
+    pointcloud_topic3: "/livox/lidar_192_168_100_116"
     grid_map_topic: "semantic_grid_map"
     robot_base_frame_id: "base_footprint"
     robot_height: 1.2
     max_veg_height: 0.4
+    max_sky_height: 2.0
 
     filters:
       # filter1:

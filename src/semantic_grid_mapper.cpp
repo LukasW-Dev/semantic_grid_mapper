@@ -83,6 +83,7 @@ private:
   std::string semantic_pointcloud_topic_;
   std::string pointcloud_topic1_;
   std::string pointcloud_topic2_;
+  std::string pointcloud_topic3_;
   std::string grid_map_topic_;
   std::string map_frame_id_;
   std::string robot_base_frame_id_;
@@ -90,6 +91,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr semantic_cloud_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub1_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub2_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub3_;
   rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr grid_map_pub_;
 
   grid_map::GridMap map_;
@@ -112,6 +114,8 @@ private:
   grid_map::Matrix* ground_class_;
   grid_map::Matrix* obstacle_zone_;
   grid_map::Matrix* obstacle_class_;
+  grid_map::Matrix* obstacle_hit_count_;
+  grid_map::Matrix* obstacle_;
   grid_map::Matrix* min_height_old_;
   grid_map::Matrix* obstacle_clearance_;
 
@@ -134,6 +138,7 @@ public:
     this->declare_parameter<std::string>("semantic_pointcloud_topic");
     this->declare_parameter<std::string>("pointcloud_topic1");
     this->declare_parameter<std::string>("pointcloud_topic2");
+    this->declare_parameter<std::string>("pointcloud_topic3");
     this->declare_parameter<std::string>("grid_map_topic");
     this->declare_parameter<std::string>("map_frame_id");
     this->declare_parameter<std::string>("robot_base_frame_id");
@@ -156,6 +161,7 @@ public:
     this->get_parameter("semantic_pointcloud_topic", semantic_pointcloud_topic_);
     this->get_parameter("pointcloud_topic1", pointcloud_topic1_);
     this->get_parameter("pointcloud_topic2", pointcloud_topic2_);
+    this->get_parameter("pointcloud_topic3", pointcloud_topic3_);
     this->get_parameter("grid_map_topic", grid_map_topic_);
     this->get_parameter("map_frame_id", map_frame_id_);
     this->get_parameter("robot_base_frame_id", robot_base_frame_id_);
@@ -218,22 +224,20 @@ public:
       // map_.add(name + "_sky_prob");
     }
 
-    // Independent Layer for each class. The above probabilities have cross-class dependencies.
-    // For example if a cell has a high probability to be tree-foliage, the probability for tree-trunk is low
-    // even though there might be hits in the cell. This is a problem if we wan't to extract the info whether there is a tree trunk because
-    // the info could get lost due to many hits for tree-foliage.
-    // for (auto name : class_names_) {
-    //   map_.add(name + "_idp");
-    //   map_[name + "_idp"].setConstant(0.0);
-    // }
-
     // Visualization layer which combines all classes
     map_.add("ground_class");
     map_["ground_class"].setConstant(-1.0);
     map_.add("obstacle_class");
     map_["obstacle_class"].setConstant(-1.0);
+    map_.add("obstacle_hit_count");
+    map_["obstacle_hit_count"].setConstant(0.0);
+    map_.add("obstacle"); 
+    map_["obstacle"].setConstant(0.0);
     ground_class_ = &map_["ground_class"];
     obstacle_class_ = &map_["obstacle_class"];
+    obstacle_ = &map_["obstacle"];
+    obstacle_hit_count_ = &map_["obstacle_hit_count"];
+  
 
     map_.add("min_height");
     map_.add("min_height_old");
@@ -280,6 +284,10 @@ public:
         pointcloud_topic2_, qos_profile,
         std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
 
+    pointcloud_sub3_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+        pointcloud_topic3_, qos_profile,
+        std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
+
     grid_map_pub_ =
         create_publisher<grid_map_msgs::msg::GridMap>(grid_map_topic_, 10);
 
@@ -312,7 +320,7 @@ public:
 
     // Initialize Timer with 500ms period
     update_timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(500),
+        std::chrono::milliseconds(1000),
         std::bind(&SemanticGridMapper::applyFilterChain, this));
 
     pc_updates_ = 0;
@@ -326,22 +334,16 @@ private:
     return std::log(p / (1.0 - p));
   }
 
-  // double log_odds_to_prob(double l) {
-  //   return 1.0 - (1.0 / (1.0 + std::exp(l)));
-  // }
-
   double update_log_odds(double old_l, double meas_l) {
     // If new cell (not yet initialized, only new value)
     if (std::isnan(old_l)) {
       return meas_l;
-    //   return std::clamp(meas_l, log_odd_min_, log_odd_max_);
     }
 
 
     // Update log-odds and clamp to range 
     double updated_l = old_l + meas_l;
     return updated_l;
-    //return std::clamp(updated_l, log_odd_min_, log_odd_max_);
   }
 
   float packRGB(uint8_t r, uint8_t g, uint8_t b) {
@@ -352,9 +354,47 @@ private:
     return rgb_float;
   }
 
+  grid_map::Polygon createAnnularSectorPolygon(double inner_radius, double outer_radius,
+                                              double min_angle, double max_angle,
+                                              int num_points = 30)
+  {
+    grid_map::Polygon polygon;
+    grid_map::Position center = map_.getPosition();  // robot is at map center
+
+    // Handle angle wrapping
+    double angle_span = max_angle >= min_angle ? max_angle - min_angle : 2.0 * M_PI - (min_angle - max_angle);
+
+    // Outer arc (counter-clockwise)
+    for (int i = 0; i <= num_points; ++i) {
+        double angle = wrapTo2Pi(min_angle + i * angle_span / num_points);
+        double x = center.x() + outer_radius * std::cos(angle);
+        double y = center.y() + outer_radius * std::sin(angle);
+        polygon.addVertex(grid_map::Position(x, y));
+    }
+
+    // Inner arc (clockwise — reverse order)
+    for (int i = num_points; i >= 0; --i) {
+        double angle = wrapTo2Pi(min_angle + i * angle_span / num_points);
+        double x = center.x() + inner_radius * std::cos(angle);
+        double y = center.y() + inner_radius * std::sin(angle);
+        polygon.addVertex(grid_map::Position(x, y));
+    }
+
+    return polygon;
+  }
+
+  double wrapTo2Pi(double angle_rad)
+  {
+      double two_pi = 2.0 * M_PI;
+      return std::fmod(std::fmod(angle_rad, two_pi) + two_pi, two_pi);
+  }
+
   void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
 
+    // Get Timestamp using chrono
+    auto timestamp = std::chrono::steady_clock::now();
     pc_updates_++;
+    map_["obstacle_hit_count"].setConstant(0.0);
 
     //=================================================================================================================
     // 1) Move the whole map with the robot
@@ -390,9 +430,15 @@ private:
     // identify lidar
     bool top_ouster = msg->header.frame_id == "top_os_lidar";
     bool front_ouster = msg->header.frame_id == "front_os_lidar";
+    bool front_livox = msg->header.frame_id == "front_livox_link";
 
     pcl::PointCloud<pcl::PointXYZ> filtered_cloud;
     for (const auto &point : transformed_cloud.points) {
+
+      // Ignore points over 1.5m
+      if(point.z > 1.5){
+        continue;
+      }
 
       // Points too close to the robot are ignored
       if (!(std::hypot(point.x, point.y, point.z) >= 1.5)) {
@@ -403,7 +449,7 @@ private:
       // filter points in angle +- 20 degrees
       if (top_ouster) {
         double angle = std::atan2(point.y, point.x);
-        if (angle < -0.3490658503988659 || angle > 0.3490658503988659) { // -20 to +20 degrees
+        if (angle > -0.3491 && angle < 0.3491) { // -20 to +20 degrees
           continue;
         }
       }
@@ -414,8 +460,14 @@ private:
       }
 
       // ========== Front Ouster ==========
-      // If front ouster, filter points in negative x direction
-      if (front_ouster && point.x < 0) {
+      // filter points in negative x direction
+      if (front_ouster && point.x < 1) {
+        continue;
+      }
+
+      // ========== Front Livox ==========
+      // filter points in negative x direction
+      if (front_livox && point.x < 1) {
         continue;
       }
 
@@ -437,8 +489,12 @@ private:
     Eigen::Affine3d robot_eigen_transform = tf2::transformToEigen(map_transform.transform);
     pcl::transformPointCloud(transformed_cloud, map_cloud, robot_eigen_transform);
 
+    
     //=================================================================================================================
-    // Point Iteration
+    // 5) Point Iteration
+
+    // Vector to store visited map indices
+    std::unordered_set<grid_map::Index> visited_indices;
     for (const auto &point : map_cloud.points) {
 
       // Check if the point is inside the map
@@ -455,14 +511,86 @@ private:
         (*min_height_)(idx(0), idx(1)) = point.z;
       }
 
-      // Update obstacle clearance layer
+      // Update obstacle clearance layer and obstacle zone
       if(point.z > (*min_height_)(idx(0), idx(1)) + max_veg_height_ && 
          point.z < (*min_height_)(idx(0), idx(1)) + robot_height_) {
+
+        
         (*obstacle_clearance_)(idx(0), idx(1)) += 1.0;
+        
+        // Check if the point is a obstacle class
+        std::tuple<uint8_t, uint8_t, uint8_t> color;
+        unpackRGB((*obstacle_class_)(idx(0), idx(1)), std::get<0>(color), std::get<1>(color), std::get<2>(color));
+        std::string cls_name = color_to_class_[color];
+        if(cls_name != "grass" && cls_name != "dirt" && cls_name != "gravel" && cls_name != "mud" && cls_name != "water")
+        {
+          (*obstacle_hit_count_)(idx(0), idx(1))++;
+        }
       }
     }
 
+    //=================================================================================================================
+    // 6) Map Iteration
+    double roll, pitch, yaw;
+    tf2::Quaternion tf_q;
+    tf2::fromMsg(robot_transform.transform.rotation, tf_q);
+    tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
+    double clipped_range = 10.0; // approximatelly half the diagonal
+    
+    // ========== Top Ouster ==========
+    if(top_ouster)
+    {
+      double angle_min = wrapTo2Pi(20.0 * (M_PI / 180.0) + yaw);
+      double angle_max = wrapTo2Pi(-20.0 * (M_PI / 180.0) + yaw);
+      grid_map::Polygon sector = createAnnularSectorPolygon(3.5, clipped_range, angle_min, angle_max);
+
+      for (grid_map::PolygonIterator it(map_, sector); !it.isPastEnd(); ++it) {
+        grid_map::Index idx = *it;
+        
+        // Process each cell inside the sector
+        double prob = (*obstacle_hit_count_)(idx(0), idx(1)) > 0 ? 1.0 : 0.4;
+        (*obstacle_zone_)(idx(0), idx(1)) = update_log_odds((*obstacle_zone_)(idx(0), idx(1)), prob_to_log_odds(prob));
+      }
+    }
+
+    // ========== Front Ouster ==========
+    else if(front_ouster)
+    {
+      double angle_min = wrapTo2Pi(-80.0 * (M_PI / 180.0) + yaw);
+      double angle_max = wrapTo2Pi(80.0 * (M_PI / 180.0) + yaw);
+
+      grid_map::Polygon sector = createAnnularSectorPolygon(1.5, clipped_range, angle_min, angle_max);
+
+      for (grid_map::PolygonIterator it(map_, sector); !it.isPastEnd(); ++it) {
+        grid_map::Index idx = *it;
+        
+        // Process each cell inside the sector
+        double prob = (*obstacle_hit_count_)(idx(0), idx(1)) > 0 ? 1.0 : 0.2;
+        (*obstacle_zone_)(idx(0), idx(1)) = update_log_odds((*obstacle_zone_)(idx(0), idx(1)), prob_to_log_odds(prob));
+      }
+    }
+
+    // ========== Front Livox ==========
+    else if(front_livox)
+    {
+      double angle_min = wrapTo2Pi(-80.0 * (M_PI / 180.0) + yaw);
+      double angle_max = wrapTo2Pi(80.0 * (M_PI / 180.0) + yaw);
+
+      grid_map::Polygon sector = createAnnularSectorPolygon(1.5, clipped_range, angle_min, angle_max);
+
+      for (grid_map::PolygonIterator it(map_, sector); !it.isPastEnd(); ++it) {
+        grid_map::Index idx = *it;
+        
+        // Process each cell inside the sector
+        double prob = (*obstacle_hit_count_)(idx(0), idx(1)) > 0 ? 1.0 : 0.2;
+        (*obstacle_zone_)(idx(0), idx(1)) = update_log_odds((*obstacle_zone_)(idx(0), idx(1)), prob_to_log_odds(prob));
+      }
+    }
+
+
     last_update_stamp_ = msg->header.stamp;
+    auto pc_cb_time = std::chrono::steady_clock::now();
+    RCLCPP_INFO(this->get_logger(), "PointCloud Callback took %f ms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
   }
 
   void semanticPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
@@ -540,15 +668,9 @@ private:
         continue;
       }
 
-      // Update the min height layer
-      // TODO: Remove this
       grid_map::Index idx;
       map_.getIndex(pos, idx);
       visited_indices.insert(idx);
-      //float min_height = (*min_height_)(idx(0), idx(1));
-      // if (std::isnan(min_height) || point.z < min_height) {
-      //   (*min_height_)(idx(0), idx(1)) = point.z;
-      // }
       
       // Update class hit count
       std::string cls_name = color_to_class_[color];
@@ -656,13 +778,8 @@ private:
       // Set the obstacle class rgb
       if (max_log_odd_obstacle > 0) {
         (*obstacle_class_)(i) = packRGB(max_class_rgb_obstacle[0], max_class_rgb_obstacle[1], max_class_rgb_obstacle[2]);
-        //(*obstacle_zone_)(i) = 1000; // Mark as obstacle zone
       }
 
-      // If min height is NaN, use value from the old layer
-      // if (std::isnan((*min_height_)(i))) {
-      //   (*min_height_)(i) = (*min_height_old_)(i);
-      // }
     }
 
     last_update_stamp_ = msg->header.stamp;
@@ -682,17 +799,15 @@ private:
         (*min_height_)(i) = (*min_height_old_)(i);
       }
 
-      // If clearance is not 0 and obstacle_class is set, set obstacle_zone to 1000
-      if ((*obstacle_clearance_)(i) > 0.0 && (*obstacle_class_)(i) != -1.0) {
-        (*obstacle_zone_)(i) = 1000.0; // Mark as obstacle zone
-      } else {
-        (*obstacle_zone_)(i) = 0.0; // No obstacle zone
+      // Set the obstacle layer depending on the zone value
+      if((*obstacle_zone_)(i) > 0)
+      {
+        (*obstacle_)(i) = 1000;
       }
-
-      // If obstacle zone but clearance is 0, set to 0
-      // if( (*obstacle_zone_)(i) > 0 && (*obstacle_clearance_)(i) == 0.0) {
-      //   (*obstacle_zone_)(i) = 0.0;
-      // }
+      else
+      {
+        (*obstacle_)(i) = 0;
+      }
     }
 
     // Measure Map Iteration Time
@@ -701,7 +816,7 @@ private:
 
     // Fill the obstacle zone
     //markAlphaShapeObstacleClusters(map_, "obstacle_zone", 2, this->get_logger());
-    morphologicalClose3x3(map_, "obstacle_zone");
+    morphologicalClose3x3(map_, "obstacle");
 
     // Measure Obstacle Zone Time
     auto obstacle_zone_time = std::chrono::steady_clock::now();
