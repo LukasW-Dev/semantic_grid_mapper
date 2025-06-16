@@ -5,7 +5,7 @@ semantic_grid_mapper_node:
     height: 16.0
     log_odd_min: -100.0
     log_odd_max: 100.0
-    map_frame_id: "map"
+    map_frame_id: "odom"
     use_sim_time: false
     semantic_pointcloud_topic: "/rgb_cloud"
     pointcloud_topic1: "/front_os/points"

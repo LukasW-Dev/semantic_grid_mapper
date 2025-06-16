@@ -79,6 +79,7 @@ private:
 
   double robot_height_;
   double max_veg_height_;
+  double max_sky_height_;
 
   std::string semantic_pointcloud_topic_;
   std::string pointcloud_topic1_;
@@ -110,14 +111,19 @@ private:
   rclcpp::TimerBase::SharedPtr update_timer_;
 
   grid_map::Matrix* min_height_;
+  grid_map::Matrix* min_height_old_;
   grid_map::Matrix* min_height_smooth_;
+
   grid_map::Matrix* ground_class_;
-  grid_map::Matrix* obstacle_zone_;
   grid_map::Matrix* obstacle_class_;
+
+  grid_map::Matrix* obstacle_zone_;
   grid_map::Matrix* obstacle_hit_count_;
   grid_map::Matrix* obstacle_;
-  grid_map::Matrix* min_height_old_;
-  grid_map::Matrix* obstacle_clearance_;
+
+  grid_map::Matrix* sky_zone_;
+  grid_map::Matrix* sky_hit_count_;
+  grid_map::Matrix* sky_;
 
   rclcpp::Time last_update_stamp_;
 
@@ -145,6 +151,7 @@ public:
 
     this->declare_parameter<double>("robot_height");
     this->declare_parameter<double>("max_veg_height");
+    this->declare_parameter<double>("max_sky_height");
 
     this->declare_parameter("filter_chain_parameter_name", std::string("filters"));
 
@@ -157,6 +164,8 @@ public:
 
     this->get_parameter("robot_height", robot_height_);
     this->get_parameter("max_veg_height", max_veg_height_);
+    this->get_parameter("max_sky_height", max_sky_height_);
+
 
     this->get_parameter("semantic_pointcloud_topic", semantic_pointcloud_topic_);
     this->get_parameter("pointcloud_topic1", pointcloud_topic1_);
@@ -202,7 +211,6 @@ public:
     for (auto name : class_names_) {
       map_.add(name + "_ground");
       map_.add(name + "_obstacle");
-      // map_.add(name + "_sky");
     }
 
     // Visualization layer for each class
@@ -214,31 +222,47 @@ public:
     for (auto name : class_names_) {
       map_.add(name + "_ground_hit");
       map_.add(name + "_obstacle_hit");
-      // map_.add(name + "_sky_hit");
     }
 
     // Probability layers (% format 0..1)
     for (auto name : class_names_) {
       map_.add(name + "_ground_prob");
       map_.add(name + "_obstacle_prob");
-      // map_.add(name + "_sky_prob");
     }
 
     // Visualization layer which combines all classes
     map_.add("ground_class");
     map_["ground_class"].setConstant(-1.0);
+    ground_class_ = &map_["ground_class"];
+
     map_.add("obstacle_class");
     map_["obstacle_class"].setConstant(-1.0);
+    obstacle_class_ = &map_["obstacle_class"];
+
+    map_.add("obstacle_zone");
+    map_["obstacle_zone"].setConstant(0.0); 
+    obstacle_zone_ = &map_["obstacle_zone"];
+
     map_.add("obstacle_hit_count");
     map_["obstacle_hit_count"].setConstant(0.0);
+    obstacle_hit_count_ = &map_["obstacle_hit_count"];
+
     map_.add("obstacle"); 
     map_["obstacle"].setConstant(0.0);
-    ground_class_ = &map_["ground_class"];
-    obstacle_class_ = &map_["obstacle_class"];
     obstacle_ = &map_["obstacle"];
-    obstacle_hit_count_ = &map_["obstacle_hit_count"];
-  
 
+    map_.add("sky_zone");
+    map_["sky_zone"].setConstant(0.0); 
+    sky_zone_ = &map_["sky_zone"];
+
+    map_.add("sky_hit_count");
+    map_["sky_hit_count"].setConstant(0.0);
+    sky_hit_count_ = &map_["sky_hit_count"];
+
+    map_.add("sky_map"); 
+    map_["sky_map"].setConstant(0.0);
+    sky_ = &map_["sky_map"];
+  
     map_.add("min_height");
     map_.add("min_height_old");
     map_.add("min_height_smooth");
@@ -249,13 +273,6 @@ public:
     min_height_old_ = &map_["min_height_old"];
     min_height_smooth_ = &map_["min_height_smooth"];
 
-    map_.add("obstacle_clearance");
-    map_["obstacle_clearance"].setConstant(0.0);
-    obstacle_clearance_ = &map_["obstacle_clearance"];
-
-    map_.add("obstacle_zone");
-    map_["obstacle_zone"].setConstant(0.0); // 0 = no obstacle, 100 = obstacle
-    obstacle_zone_ = &map_["obstacle_zone"];
 
     // Initialize the map
     map_.setGeometry(grid_map::Length(length_, height_), resolution_,
@@ -395,6 +412,7 @@ private:
     auto timestamp = std::chrono::steady_clock::now();
     pc_updates_++;
     map_["obstacle_hit_count"].setConstant(0.0);
+    map_["sky_hit_count"].setConstant(0.0);
 
     //=================================================================================================================
     // 1) Move the whole map with the robot
@@ -432,7 +450,7 @@ private:
     bool front_ouster = msg->header.frame_id == "front_os_lidar";
     bool front_livox = msg->header.frame_id == "front_livox_link";
 
-    pcl::PointCloud<pcl::PointXYZ> filtered_cloud;
+    pcl::PointCloud<pcl::PointXYZ> obstacle_cloud;
     for (const auto &point : transformed_cloud.points) {
 
       // Ignore points over 1.5m
@@ -471,10 +489,8 @@ private:
         continue;
       }
 
-      filtered_cloud.push_back(point);
-
+      obstacle_cloud.push_back(point);
     }
-    transformed_cloud = filtered_cloud;
 
     //=================================================================================================================
     // 4) Transform from the robot frame to the map frame
@@ -485,17 +501,15 @@ private:
       RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
       return;
     }
-    pcl::PointCloud<pcl::PointXYZ> map_cloud;
+    pcl::PointCloud<pcl::PointXYZ> map_cloud_obstacle;
+    pcl::PointCloud<pcl::PointXYZ> map_cloud_sky;
     Eigen::Affine3d robot_eigen_transform = tf2::transformToEigen(map_transform.transform);
-    pcl::transformPointCloud(transformed_cloud, map_cloud, robot_eigen_transform);
-
-    
+    pcl::transformPointCloud(obstacle_cloud, map_cloud_obstacle, robot_eigen_transform);
+    pcl::transformPointCloud(transformed_cloud, map_cloud_sky, robot_eigen_transform);
+   
     //=================================================================================================================
-    // 5) Point Iteration
-
-    // Vector to store visited map indices
-    std::unordered_set<grid_map::Index> visited_indices;
-    for (const auto &point : map_cloud.points) {
+    // 5) Point Iteration Obstacle / Min Height
+    for (const auto &point : map_cloud_obstacle.points) {
 
       // Check if the point is inside the map
       grid_map::Position pos(point.x, point.y);
@@ -511,12 +525,9 @@ private:
         (*min_height_)(idx(0), idx(1)) = point.z;
       }
 
-      // Update obstacle clearance layer and obstacle zone
+      // Update obstacle hit count
       if(point.z > (*min_height_)(idx(0), idx(1)) + max_veg_height_ && 
          point.z < (*min_height_)(idx(0), idx(1)) + robot_height_) {
-
-        
-        (*obstacle_clearance_)(idx(0), idx(1)) += 1.0;
         
         // Check if the point is a obstacle class
         if(std::isnan((*obstacle_class_)(idx(0), idx(1)))) continue;
@@ -527,6 +538,26 @@ private:
         {
           (*obstacle_hit_count_)(idx(0), idx(1))++;
         }
+      }
+    }
+
+    //=================================================================================================================
+    // 6) Point Iteration Sky
+    for (const auto &point : map_cloud_sky.points) {
+
+      // Check if the point is inside the map
+      grid_map::Position pos(point.x, point.y);
+      if (!map_.isInside(pos)) {
+        continue;
+      }
+
+      grid_map::Index idx;
+      map_.getIndex(pos, idx);
+
+      // Update sky hit count
+      if(point.z > (*min_height_)(idx(0), idx(1)) + robot_height_ && 
+         point.z < (*min_height_)(idx(0), idx(1)) + max_sky_height_) {
+        (*sky_hit_count_)(idx(0), idx(1))++;
       }
     }
 
@@ -549,7 +580,7 @@ private:
         grid_map::Index idx = *it;
         
         // Process each cell inside the sector
-        double prob = (*obstacle_hit_count_)(idx(0), idx(1)) > 0 ? 1.0 : 0.4;
+        double prob = (*obstacle_hit_count_)(idx(0), idx(1)) > 0 ? 1.0 : 0.2;
         (*obstacle_zone_)(idx(0), idx(1)) = update_log_odds((*obstacle_zone_)(idx(0), idx(1)), prob_to_log_odds(prob));
       }
     }
@@ -588,6 +619,15 @@ private:
         (*obstacle_zone_)(idx(0), idx(1)) = update_log_odds((*obstacle_zone_)(idx(0), idx(1)), prob_to_log_odds(prob));
         (*obstacle_zone_)(idx(0), idx(1)) = std::clamp((*obstacle_zone_)(idx(0), idx(1)), log_odd_min_, log_odd_max_);
       }
+    }
+
+    // Map Iteration Sky Layer
+    for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
+      const size_t idx = it.getLinearIndex();
+
+      double prob = (*sky_hit_count_)(idx) > 0 ? 1.0 : 0.48;
+      (*sky_zone_)(idx) = update_log_odds((*sky_zone_)(idx), prob_to_log_odds(prob));
+      (*sky_zone_)(idx) = std::clamp((*sky_zone_)(idx), log_odd_min_, log_odd_max_);
     }
 
 
@@ -693,11 +733,6 @@ private:
             (*(cls_[cls_name].hit_obstacle))(idx(0), idx(1)) += 1.0;
           }
         }
-
-        // // Sky Layer
-        // else if(point.z >= map_.at("min_height_smooth", idx) + robot_height_) {
-        //   map_.at(cls + "_sky_hit", idx) += 1.0;
-        // }
       }
 
     }
@@ -811,6 +846,16 @@ private:
       {
         (*obstacle_)(i) = 0;
       }
+
+      // Set the sky layer depending on the zone value
+      if((*sky_zone_)(i) > 0)
+      {
+        (*sky_)(i) = 1000;
+      }
+      else
+      {
+        (*sky_)(i) = 0;
+      }
     }
 
     // Measure Map Iteration Time
@@ -820,6 +865,7 @@ private:
     // Fill the obstacle zone
     //markAlphaShapeObstacleClusters(map_, "obstacle_zone", 2, this->get_logger());
     morphologicalClose3x3(map_, "obstacle");
+    morphologicalClose3x3(map_, "sky_map");
 
     // Measure Obstacle Zone Time
     auto obstacle_zone_time = std::chrono::steady_clock::now();
@@ -846,8 +892,6 @@ private:
     map_["min_height_old"] = map_["min_height"];
     map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
     // map_["obstacle_zone"].setConstant(std::numeric_limits<float>::quiet_NaN());
-    map_["obstacle_clearance"].setConstant(0.0);
-
   }
 
 };
