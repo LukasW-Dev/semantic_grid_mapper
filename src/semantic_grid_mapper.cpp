@@ -70,8 +70,8 @@ using std::placeholders::_1;
 
 class SemanticGridMapper : public rclcpp::Node {
 private:
-  double log_odd_min_;
-  double log_odd_max_;
+  float log_odd_min_;
+  float log_odd_max_;
   bool use_sim_time_;
   double resolution_;
   double length_;
@@ -519,6 +519,7 @@ private:
         (*obstacle_clearance_)(idx(0), idx(1)) += 1.0;
         
         // Check if the point is a obstacle class
+        if(std::isnan((*obstacle_class_)(idx(0), idx(1)))) continue;
         std::tuple<uint8_t, uint8_t, uint8_t> color;
         unpackRGB((*obstacle_class_)(idx(0), idx(1)), std::get<0>(color), std::get<1>(color), std::get<2>(color));
         std::string cls_name = color_to_class_[color];
@@ -567,6 +568,7 @@ private:
         // Process each cell inside the sector
         double prob = (*obstacle_hit_count_)(idx(0), idx(1)) > 0 ? 1.0 : 0.2;
         (*obstacle_zone_)(idx(0), idx(1)) = update_log_odds((*obstacle_zone_)(idx(0), idx(1)), prob_to_log_odds(prob));
+        (*obstacle_zone_)(idx(0), idx(1)) = std::clamp((*obstacle_zone_)(idx(0), idx(1)), log_odd_min_, log_odd_max_);
       }
     }
 
@@ -584,6 +586,7 @@ private:
         // Process each cell inside the sector
         double prob = (*obstacle_hit_count_)(idx(0), idx(1)) > 0 ? 1.0 : 0.2;
         (*obstacle_zone_)(idx(0), idx(1)) = update_log_odds((*obstacle_zone_)(idx(0), idx(1)), prob_to_log_odds(prob));
+        (*obstacle_zone_)(idx(0), idx(1)) = std::clamp((*obstacle_zone_)(idx(0), idx(1)), log_odd_min_, log_odd_max_);
       }
     }
 
