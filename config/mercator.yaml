@@ -5,12 +5,13 @@ semantic_grid_mapper_node:
     height: 16.0
     log_odd_min: -100.0
     log_odd_max: 100.0
-    map_frame_id: "odom"
+    map_frame_id: "map"
     use_sim_time: false
     semantic_pointcloud_topic: "/rgb_cloud"
-    pointcloud_topic1: "/front_os/points"
-    pointcloud_topic2: "/top_os/points"
-    pointcloud_topic3: "/livox/lidar_192_168_100_116"
+    pointcloud_topic1: "/left_laser/pandar"
+    pointcloud_topic2: "/right_laser/pandar"
+    pointcloud_topic3: "None"
+
     grid_map_topic: "semantic_grid_map"
     robot_base_frame_id: "base_link"
     robot_height: 1.0

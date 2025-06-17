@@ -297,13 +297,19 @@ public:
         pointcloud_topic1_, qos_profile,
         std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
 
-    pointcloud_sub2_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-        pointcloud_topic2_, qos_profile,
-        std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
+    if(pointcloud_topic2_ != "None")
+    {
+      pointcloud_sub2_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+          pointcloud_topic2_, qos_profile,
+          std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
+    }
 
-    pointcloud_sub3_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-        pointcloud_topic3_, qos_profile,
-        std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
+    if(pointcloud_topic3_ != "None")
+    {
+      pointcloud_sub3_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+          pointcloud_topic3_, qos_profile,
+          std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
+    }
 
     grid_map_pub_ =
         create_publisher<grid_map_msgs::msg::GridMap>(grid_map_topic_, 10);
@@ -337,7 +343,7 @@ public:
 
     // Initialize Timer with 500ms period
     update_timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(1000),
+        std::chrono::milliseconds(500),
         std::bind(&SemanticGridMapper::applyFilterChain, this));
 
     pc_updates_ = 0;
@@ -449,6 +455,8 @@ private:
     bool top_ouster = msg->header.frame_id == "top_os_lidar";
     bool front_ouster = msg->header.frame_id == "front_os_lidar";
     bool front_livox = msg->header.frame_id == "front_livox_link";
+    bool left_laser_pandar = msg->header.frame_id == "left_laser_mount";
+    bool right_laser_pandar = msg->header.frame_id == "right_laser_mount";
 
     pcl::PointCloud<pcl::PointXYZ> obstacle_cloud;
     for (const auto &point : transformed_cloud.points) {
@@ -459,7 +467,10 @@ private:
       }
 
       // Points too close to the robot are ignored
-      if (!(std::hypot(point.x, point.y, point.z) >= 1.5)) {
+      double min_radius;
+      if(left_laser_pandar || right_laser_pandar) min_radius = 1.5;
+      if(top_ouster || front_ouster || front_livox) min_radius = 3.2;
+      if (!(std::hypot(point.x, point.y, point.z) >= min_radius)) {
         continue;
       }
 
@@ -486,6 +497,13 @@ private:
       // ========== Front Livox ==========
       // filter points in negative x direction
       if (front_livox && point.x < 1) {
+        continue;
+      }
+
+      // ========== Left Laser Pandar / Right Laser Pandar ==========
+      // filter points in negative x direction
+      if((left_laser_pandar || right_laser_pandar) && point.x < 1)
+      {
         continue;
       }
 
@@ -621,6 +639,24 @@ private:
       }
     }
 
+    // ========== Left Laser Pandar / Right Laser Pandar ==========
+    else if(left_laser_pandar || right_laser_pandar)
+    {
+      double angle_min = wrapTo2Pi(-90.0 * (M_PI / 180.0) + yaw);
+      double angle_max = wrapTo2Pi(90.0 * (M_PI / 180.0) + yaw);
+
+      grid_map::Polygon sector = createAnnularSectorPolygon(1.5, clipped_range, angle_min, angle_max);
+
+      for (grid_map::PolygonIterator it(map_, sector); !it.isPastEnd(); ++it) {
+        grid_map::Index idx = *it;
+        
+        // Process each cell inside the sector
+        double prob = (*obstacle_hit_count_)(idx(0), idx(1)) > 0 ? 1.0 : 0.2;
+        (*obstacle_zone_)(idx(0), idx(1)) = update_log_odds((*obstacle_zone_)(idx(0), idx(1)), prob_to_log_odds(prob));
+        (*obstacle_zone_)(idx(0), idx(1)) = std::clamp((*obstacle_zone_)(idx(0), idx(1)), log_odd_min_, log_odd_max_);
+      }
+    }
+
     // Map Iteration Sky Layer
     for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
       const size_t idx = it.getLinearIndex();
@@ -633,7 +669,7 @@ private:
 
     last_update_stamp_ = msg->header.stamp;
     auto pc_cb_time = std::chrono::steady_clock::now();
-    RCLCPP_INFO(this->get_logger(), "PointCloud Callback took %f ms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
+    // RCLCPP_INFO(this->get_logger(), "PointCloud Callback took %f ms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
   }
 
   void semanticPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
