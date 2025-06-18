@@ -27,6 +27,11 @@
 #include <functional> // for std::hash
 
 #include <chrono>
+#include <kindr/Core>
+#include <nav_msgs/msg/odometry.hpp>
+#include <message_filters/cache.h>
+#include <message_filters/subscriber.h>
+
 
 namespace std {
 template <>
@@ -93,6 +98,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub1_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub2_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub3_;
+  message_filters::Subscriber<nav_msgs::msg::Odometry> robotPoseSubscriber_;
   rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr grid_map_pub_;
 
   grid_map::GridMap map_;
@@ -113,6 +119,8 @@ private:
   grid_map::Matrix* min_height_;
   grid_map::Matrix* min_height_old_;
   grid_map::Matrix* min_height_smooth_;
+  grid_map::Matrix* height_estimate_;
+  grid_map::Matrix* height_variance_;
 
   grid_map::Matrix* ground_class_;
   grid_map::Matrix* obstacle_class_;
@@ -128,6 +136,9 @@ private:
   rclcpp::Time last_update_stamp_;
 
   int pc_updates_;
+  message_filters::Cache<nav_msgs::msg::Odometry> robotPoseCache_;
+  std::string robotPoseTopic_;
+  int robotPoseCacheSize_;
 
 public:
   SemanticGridMapper()
@@ -155,6 +166,9 @@ public:
 
     this->declare_parameter("filter_chain_parameter_name", std::string("filters"));
 
+    this->declare_parameter("robot_pose_with_covariance_topic", std::string("/pose"));
+    this->declare_parameter("robot_pose_cache_size", 200);
+
     // Retrieve and store parameter values
     this->get_parameter("resolution", resolution_);
     this->get_parameter("length", length_);
@@ -175,6 +189,8 @@ public:
     this->get_parameter("map_frame_id", map_frame_id_);
     this->get_parameter("robot_base_frame_id", robot_base_frame_id_);
 
+    this->get_parameter("robot_pose_with_covariance_topic", robotPoseTopic_);  
+    this->get_parameter("robot_pose_cache_size", robotPoseCacheSize_);
 
     this->get_parameter("use_sim_time", use_sim_time_);
     this->set_parameter(rclcpp::Parameter("use_sim_time", use_sim_time_));
@@ -266,12 +282,18 @@ public:
     map_.add("min_height");
     map_.add("min_height_old");
     map_.add("min_height_smooth");
+    map_.add("height_estimate");
+    map_.add("height_variance");
     map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
     map_["min_height_old"].setConstant(std::numeric_limits<float>::quiet_NaN());
     map_["min_height_smooth"].setConstant(std::numeric_limits<float>::quiet_NaN());
+    map_["height_estimate"].setConstant(std::numeric_limits<float>::quiet_NaN());
+    map_["height_variance"].setConstant(std::numeric_limits<float>::quiet_NaN());
     min_height_ = &map_["min_height"];
     min_height_old_ = &map_["min_height_old"];
     min_height_smooth_ = &map_["min_height_smooth"];
+    height_estimate_ = &map_["height_estimate"];
+    height_variance_ = &map_["height_variance"];
 
 
     // Initialize the map
@@ -347,6 +369,22 @@ public:
         std::bind(&SemanticGridMapper::applyFilterChain, this));
 
     pc_updates_ = 0;
+
+    rmw_qos_profile_t qos_pose_profile{
+      RMW_QOS_POLICY_HISTORY_KEEP_LAST,
+      1,
+      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
+      RMW_QOS_POLICY_DURABILITY_VOLATILE,
+      RMW_QOS_DEADLINE_DEFAULT,
+      RMW_QOS_LIFESPAN_DEFAULT,
+      RMW_QOS_POLICY_LIVELINESS_SYSTEM_DEFAULT,
+      RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT,
+      false
+    };
+
+    robotPoseSubscriber_.subscribe(this, robotPoseTopic_,qos_pose_profile);
+    robotPoseCache_.connectInput(robotPoseSubscriber_);
+    robotPoseCache_.setCacheSize(robotPoseCacheSize_);
 
     RCLCPP_INFO(this->get_logger(), "Semantic Grid Mapper initialized.");
   }
@@ -446,8 +484,8 @@ private:
       return;
     }
     pcl::PointCloud<pcl::PointXYZ> transformed_cloud;
-    Eigen::Affine3d eigen_transform = tf2::transformToEigen(pc_transform.transform);
-    pcl::transformPointCloud(pcl_cloud, transformed_cloud, eigen_transform);
+    Eigen::Affine3d T_base_to_sensor = tf2::transformToEigen(pc_transform.transform);
+    pcl::transformPointCloud(pcl_cloud, transformed_cloud, T_base_to_sensor);
 
     //=================================================================================================================
     // 3) Filter points
@@ -459,105 +497,211 @@ private:
     bool right_laser_pandar = msg->header.frame_id == "right_laser_mount";
 
     pcl::PointCloud<pcl::PointXYZ> obstacle_cloud;
-    for (const auto &point : transformed_cloud.points) {
+    std::vector<float> beam_range;
+    std::vector<Eigen::Vector3f> point_vector;
 
-      // Ignore points over 1.5m
-      if(point.z > 1.5){
-        continue;
-      }
+    {
+      auto it_a = transformed_cloud.points.begin();
+      auto it_b = pcl_cloud.points.begin();
+      for (; it_a != transformed_cloud.points.end() && it_b != pcl_cloud.points.end(); ++it_a, ++it_b) {
+          const auto& point = *it_a;
+          const auto& point_sensor = *it_b;
 
-      // Points too close to the robot are ignored
-      double min_radius;
-      if(left_laser_pandar || right_laser_pandar) min_radius = 1.5;
-      if(top_ouster || front_ouster || front_livox) min_radius = 3.2;
-      if (!(std::hypot(point.x, point.y, point.z) >= min_radius)) {
-        continue;
-      }
-
-      // ========== Top Ouster ==========
-      // filter points in angle +- 20 degrees
-      if (top_ouster) {
-        double angle = std::atan2(point.y, point.x);
-        if (angle > -0.3491 && angle < 0.3491) { // -20 to +20 degrees
+        // Ignore points over 1.5m
+        if(point.z > 1.5){
           continue;
         }
-      }
 
-      // filter points too close to the robot, since top ouster does not reach the ground within 3.5m radius
-      if (top_ouster && std::hypot(point.x, point.y, point.z) < 3.5) {
-        continue;
-      }
+        // Points too close to the robot are ignored
+        double min_radius;
+        if(left_laser_pandar || right_laser_pandar) min_radius = 1.5;
+        if(top_ouster || front_ouster || front_livox) min_radius = 3.2;
+        if (!(std::hypot(point.x, point.y, point.z) >= min_radius)) {
+          continue;
+        }
 
-      // ========== Front Ouster ==========
-      // filter points in negative x direction
-      if (front_ouster && point.x < 1) {
-        continue;
-      }
+        // ========== Top Ouster ==========
+        // filter points in angle +- 20 degrees
+        if (top_ouster) {
+          double angle = std::atan2(point.y, point.x);
+          if (angle > -0.3491 && angle < 0.3491) { // -20 to +20 degrees
+            continue;
+          }
+        }
 
-      // ========== Front Livox ==========
-      // filter points in negative x direction
-      if (front_livox && point.x < 1) {
-        continue;
-      }
+        // filter points too close to the robot, since top ouster does not reach the ground within 3.5m radius
+        if (top_ouster && std::hypot(point.x, point.y, point.z) < 3.5) {
+          continue;
+        }
 
-      // ========== Left Laser Pandar / Right Laser Pandar ==========
-      // filter points in negative x direction
-      if((left_laser_pandar || right_laser_pandar) && point.x < 1)
-      {
-        continue;
-      }
+        // ========== Front Ouster ==========
+        // filter points in negative x direction
+        if (front_ouster && point.x < 1) {
+          continue;
+        }
 
-      obstacle_cloud.push_back(point);
+        // ========== Front Livox ==========
+        // filter points in negative x direction
+        if (front_livox && point.x < 1) {
+          continue;
+        }
+
+        // ========== Left Laser Pandar / Right Laser Pandar ==========
+        // filter points in negative x direction
+        if((left_laser_pandar || right_laser_pandar) && point.x < 1)
+        {
+          continue;
+        }
+
+        obstacle_cloud.push_back(point);
+        beam_range.push_back(std::hypot(point_sensor.x, point_sensor.y, point_sensor.z));
+        point_vector.push_back(Eigen::Vector3f(point_sensor.x, point_sensor.y, point_sensor.z));
+      }
     }
 
     //=================================================================================================================
     // 4) Transform from the robot frame to the map frame
-    geometry_msgs::msg::TransformStamped map_transform;
-    try {
-      map_transform = tf_buffer_.lookupTransform(map_frame_id_, robot_base_frame_id_, tf2::TimePointZero);
-    } catch (const tf2::TransformException &ex) {
-      RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
-      return;
-    }
     pcl::PointCloud<pcl::PointXYZ> map_cloud_obstacle;
     pcl::PointCloud<pcl::PointXYZ> map_cloud_sky;
-    Eigen::Affine3d robot_eigen_transform = tf2::transformToEigen(map_transform.transform);
-    pcl::transformPointCloud(obstacle_cloud, map_cloud_obstacle, robot_eigen_transform);
-    pcl::transformPointCloud(transformed_cloud, map_cloud_sky, robot_eigen_transform);
+    Eigen::Affine3d T_map_to_base = tf2::transformToEigen(robot_transform.transform);
+    pcl::transformPointCloud(obstacle_cloud, map_cloud_obstacle, T_map_to_base);
+    pcl::transformPointCloud(transformed_cloud, map_cloud_sky, T_map_to_base);
    
     //=================================================================================================================
     // 5) Point Iteration Obstacle / Min Height
-    for (const auto &point : map_cloud_obstacle.points) {
+    std::map<std::pair<int, int>, float> min_height_update;
+    std::map<std::pair<int, int>, float> update_range;
+    std::map<std::pair<int, int>, Eigen::Vector3f>  update_point_vector;
 
-      // Check if the point is inside the map
-      grid_map::Position pos(point.x, point.y);
-      if (!map_.isInside(pos)) {
-        continue;
-      }
+    {
+      auto it_a = map_cloud_obstacle.points.begin();
+      auto it_b = beam_range.begin();
+      auto it_c = point_vector.begin();
+      for (; it_a != map_cloud_obstacle.points.end() && it_b != beam_range.end() && it_c != point_vector.end(); ++it_a, ++it_b, it_c++) {
+          const auto& point = *it_a;
+          const auto& range = *it_b;
+          const auto& point_vector = *it_c;
 
-      // Update the min height layer
-      grid_map::Index idx;
-      map_.getIndex(pos, idx);
-      float min_height_val = (*min_height_)(idx(0), idx(1));
-      if (std::isnan(min_height_val) || point.z < min_height_val) {
-        (*min_height_)(idx(0), idx(1)) = point.z;
-      }
+        // Check if the point is inside the map
+        grid_map::Position pos(point.x, point.y);
+        if (!map_.isInside(pos)) {
+          continue;
+        }
 
-      // Update obstacle hit count
-      if(point.z > (*min_height_)(idx(0), idx(1)) + max_veg_height_ && 
-         point.z < (*min_height_)(idx(0), idx(1)) + robot_height_) {
-        
-        // Check if the point is a obstacle class
-        if(std::isnan((*obstacle_class_)(idx(0), idx(1)))) continue;
-        std::tuple<uint8_t, uint8_t, uint8_t> color;
-        unpackRGB((*obstacle_class_)(idx(0), idx(1)), std::get<0>(color), std::get<1>(color), std::get<2>(color));
-        std::string cls_name = color_to_class_[color];
-        if(cls_name != "grass" && cls_name != "dirt" && cls_name != "gravel" && cls_name != "mud" && cls_name != "water")
-        {
-          (*obstacle_hit_count_)(idx(0), idx(1))++;
+        // Update the min height layer
+        grid_map::Index idx;
+        map_.getIndex(pos, idx);
+        float min_height_val = (*min_height_)(idx(0), idx(1));
+        if (std::isnan(min_height_val) || point.z < min_height_val) {
+          (*min_height_)(idx(0), idx(1)) = point.z;
+          min_height_update[{idx(0), idx(1)}] = point.z;
+          update_range[{idx(0), idx(1)}] = range;
+          update_point_vector[{idx(0), idx(1)}] = point_vector;
+        }
+
+        // Update obstacle hit count
+        if(point.z > (*min_height_)(idx(0), idx(1)) + max_veg_height_ && 
+          point.z < (*min_height_)(idx(0), idx(1)) + robot_height_) {
+          
+          // Check if the point is a obstacle class
+          if(std::isnan((*obstacle_class_)(idx(0), idx(1)))) continue;
+          std::tuple<uint8_t, uint8_t, uint8_t> color;
+          unpackRGB((*obstacle_class_)(idx(0), idx(1)), std::get<0>(color), std::get<1>(color), std::get<2>(color));
+          std::string cls_name = color_to_class_[color];
+          if(cls_name != "grass" && cls_name != "dirt" && cls_name != "gravel" && cls_name != "mud" && cls_name != "water")
+          {
+            (*obstacle_hit_count_)(idx(0), idx(1))++;
+          }
         }
       }
     }
+
+    //=================================================================================================================
+    // 5) Update Height Estimate
+
+    // Projection vector (P).
+    const Eigen::RowVector3f projectionVector = Eigen::RowVector3f::UnitZ();
+
+    // Extract rotation matrices (Eigen::Matrix3d)
+    Eigen::Matrix3f R_map_to_base = T_map_to_base.rotation().cast<float>();
+    Eigen::Matrix3f R_base_to_sensor = T_base_to_sensor.rotation().cast<float>();
+
+    // Sensor Jacobian (J_s).
+    const Eigen::RowVector3f sensorJacobian = projectionVector * (R_map_to_base * R_base_to_sensor.transpose());
+
+    const float varianceNormal = 0.3 * 0.3;
+    const float beamConstant = 0.01;
+    const float beamAngle = 0.001;
+
+    std::shared_ptr<const nav_msgs::msg::Odometry> poseMessage = robotPoseCache_.getElemBeforeTime(msg->header.stamp);
+    Eigen::Matrix<double, 6, 6> robotPoseCovariance;
+    robotPoseCovariance.setZero();
+    robotPoseCovariance = Eigen::Map<const Eigen::MatrixXd>(poseMessage->pose.covariance.data(), 6, 6);
+
+    // Robot rotation covariance matrix (Sigma_q).
+    Eigen::Matrix3f rotationVariance = robotPoseCovariance.bottomRightCorner(3, 3).cast<float>();
+
+    // Preparations for robot rotation Jacobian (J_q) to minimize computation for every point in point cloud.
+    const Eigen::Matrix3f C_BM_transpose = R_map_to_base.transpose();
+    const Eigen::RowVector3f P_mul_C_BM_transpose = projectionVector * C_BM_transpose;
+    const Eigen::Matrix3f C_SB_transpose = R_base_to_sensor.transpose();
+
+    // geometry_msgs::msg::TransformStamped transformGeom;
+    // transformGeom = tf_buffer_.lookupTransform(robot_base_frame_id_, msg->header.frame_id, msg->header.stamp,
+    //                                                   rclcpp::Duration::from_seconds(1.0));
+
+    Eigen::Vector3d translationVector;
+    tf2::fromMsg(pc_transform.transform.translation, translationVector);
+    kindr::Position3D translationBaseToSensorInBaseFrame_;
+    translationBaseToSensorInBaseFrame_.toImplementation() = translationVector;
+
+    const Eigen::Matrix3f B_r_BS_skew =
+      kindr::getSkewMatrixFromVector(Eigen::Vector3f(translationBaseToSensorInBaseFrame_.toImplementation().cast<float>()));
+
+    for (const auto& [key, min_height] : min_height_update) {
+        const auto& [x, y] = key;
+
+        // Get the matching range value from the other map
+        auto it_range = update_range.find(key);
+        auto it_point_vector = update_point_vector.find(key);
+        if (it_range != update_range.end() && it_point_vector != update_point_vector.end()) {
+            float range = it_range->second;
+            const Eigen::Vector3f pointVector = it_point_vector->second;  // S_r_SP
+
+            // Compute sensor covariance matrix (Sigma_S) with sensor model.
+            float varianceLateral = beamConstant + beamAngle * range;
+            varianceLateral *= varianceLateral;
+
+            Eigen::Matrix3f sensorVariance = Eigen::Matrix3f::Zero();
+            sensorVariance.diagonal() << varianceLateral, varianceLateral, varianceNormal;
+
+            // Robot rotation Jacobian (J_q).
+            const Eigen::Matrix3f C_SB_transpose_times_S_r_SP_skew = kindr::getSkewMatrixFromVector(Eigen::Vector3f(C_SB_transpose * pointVector));
+            const Eigen::RowVector3f rotationJacobian = P_mul_C_BM_transpose * (C_SB_transpose_times_S_r_SP_skew + B_r_BS_skew);
+
+            // Measurement variance for map (error propagation law).
+            float heightVariance = 0.0;  // sigma_p
+            heightVariance += rotationJacobian * rotationVariance * rotationJacobian.transpose();
+            //RCLCPP_INFO(this->get_logger(), "Pose Varience: %f ", heightVariance);
+            heightVariance += sensorJacobian * sensorVariance * sensorJacobian.transpose();
+            //RCLCPP_INFO(this->get_logger(), "Pose Varience + Sensor Variance: %f ", heightVariance);
+
+            if(std::isnan((*height_estimate_)(x, y)) || std::isnan((*height_variance_)(x, y)))
+            {
+              (*height_estimate_)(x, y) = min_height;
+              (*height_variance_)(x, y) = heightVariance;
+            }
+            else
+            {
+              (*height_estimate_)(x, y) = ((heightVariance * (*height_estimate_)(x, y)) 
+                                            + ((*height_variance_)(x, y) * min_height))
+                                          / (heightVariance + (*height_variance_)(x, y));
+              (*height_variance_)(x, y) = ((*height_variance_)(x, y) * heightVariance)
+                                          / ((*height_variance_)(x, y) + heightVariance);
+            }
+        }
+    }
+
 
     //=================================================================================================================
     // 6) Point Iteration Sky
@@ -669,7 +813,7 @@ private:
 
     last_update_stamp_ = msg->header.stamp;
     auto pc_cb_time = std::chrono::steady_clock::now();
-    // RCLCPP_INFO(this->get_logger(), "PointCloud Callback took %f ms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
+    RCLCPP_INFO(this->get_logger(), "PC %fms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
   }
 
   void semanticPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
