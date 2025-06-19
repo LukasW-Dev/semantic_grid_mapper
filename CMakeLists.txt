@@ -23,8 +23,8 @@ find_package(tf2_eigen REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(CGAL REQUIRED)
-find_package(GMP REQUIRED)
+# find_package(CGAL REQUIRED)
+# find_package(GMP REQUIRED)
 find_package(filters REQUIRED)
 
 include_directories(
@@ -56,7 +56,7 @@ ament_target_dependencies(semantic_grid_mapper
 target_link_libraries(semantic_grid_mapper
   ${PCL_LIBRARIES}
   ${GMP_LIBRARIES}
-  CGAL::CGAL
+  # CGAL::CGAL
 )
 
 install(TARGETS semantic_grid_mapper

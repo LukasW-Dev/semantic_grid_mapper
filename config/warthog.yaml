@@ -49,7 +49,7 @@ semantic_grid_mapper_node:
         name: mean_in_radius
         type: gridMapFilters/MeanInRadiusFilter
         params:
-          input_layer: height_estimate
+          input_layer: min_height
           output_layer: min_height_smooth
           radius: 0.25
 

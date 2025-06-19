@@ -22,12 +22,12 @@
 #include <string>
 
 #include "morphology.cpp"
-#include "cluster.cpp"
+// #include "cluster.cpp"
 
 #include <functional> // for std::hash
 
 #include <chrono>
-#include <kindr/Core>
+// #include <kindr/Core>
 #include <nav_msgs/msg/odometry.hpp>
 #include <message_filters/cache.h>
 #include <message_filters/subscriber.h>
@@ -382,9 +382,9 @@ public:
       false
     };
 
-    robotPoseSubscriber_.subscribe(this, robotPoseTopic_,qos_pose_profile);
-    robotPoseCache_.connectInput(robotPoseSubscriber_);
-    robotPoseCache_.setCacheSize(robotPoseCacheSize_);
+    // robotPoseSubscriber_.subscribe(this, robotPoseTopic_,qos_pose_profile);
+    // robotPoseCache_.connectInput(robotPoseSubscriber_);
+    // robotPoseCache_.setCacheSize(robotPoseCacheSize_);
 
     RCLCPP_INFO(this->get_logger(), "Semantic Grid Mapper initialized.");
   }
@@ -616,87 +616,87 @@ private:
       }
     }
 
-    //=================================================================================================================
-    // 5) Update Height Estimate
+    // //=================================================================================================================
+    // // 5) Update Height Estimate
 
-    // Projection vector (P).
-    const Eigen::RowVector3f projectionVector = Eigen::RowVector3f::UnitZ();
+    // // Projection vector (P).
+    // const Eigen::RowVector3f projectionVector = Eigen::RowVector3f::UnitZ();
 
-    // Extract rotation matrices (Eigen::Matrix3d)
-    Eigen::Matrix3f R_map_to_base = T_map_to_base.rotation().cast<float>();
-    Eigen::Matrix3f R_base_to_sensor = T_base_to_sensor.rotation().cast<float>();
+    // // Extract rotation matrices (Eigen::Matrix3d)
+    // Eigen::Matrix3f R_map_to_base = T_map_to_base.rotation().cast<float>();
+    // Eigen::Matrix3f R_base_to_sensor = T_base_to_sensor.rotation().cast<float>();
 
-    // Sensor Jacobian (J_s).
-    const Eigen::RowVector3f sensorJacobian = projectionVector * (R_map_to_base * R_base_to_sensor.transpose());
+    // // Sensor Jacobian (J_s).
+    // const Eigen::RowVector3f sensorJacobian = projectionVector * (R_map_to_base * R_base_to_sensor.transpose());
 
-    const float varianceNormal = 0.3 * 0.3;
-    const float beamConstant = 0.01;
-    const float beamAngle = 0.001;
+    // const float varianceNormal = 0.3 * 0.3;
+    // const float beamConstant = 0.01;
+    // const float beamAngle = 0.001;
 
-    std::shared_ptr<const nav_msgs::msg::Odometry> poseMessage = robotPoseCache_.getElemBeforeTime(msg->header.stamp);
-    Eigen::Matrix<double, 6, 6> robotPoseCovariance;
-    robotPoseCovariance.setZero();
-    robotPoseCovariance = Eigen::Map<const Eigen::MatrixXd>(poseMessage->pose.covariance.data(), 6, 6);
+    // std::shared_ptr<const nav_msgs::msg::Odometry> poseMessage = robotPoseCache_.getElemBeforeTime(msg->header.stamp);
+    // Eigen::Matrix<double, 6, 6> robotPoseCovariance;
+    // robotPoseCovariance.setZero();
+    // robotPoseCovariance = Eigen::Map<const Eigen::MatrixXd>(poseMessage->pose.covariance.data(), 6, 6);
 
-    // Robot rotation covariance matrix (Sigma_q).
-    Eigen::Matrix3f rotationVariance = robotPoseCovariance.bottomRightCorner(3, 3).cast<float>();
+    // // Robot rotation covariance matrix (Sigma_q).
+    // Eigen::Matrix3f rotationVariance = robotPoseCovariance.bottomRightCorner(3, 3).cast<float>();
 
-    // Preparations for robot rotation Jacobian (J_q) to minimize computation for every point in point cloud.
-    const Eigen::Matrix3f C_BM_transpose = R_map_to_base.transpose();
-    const Eigen::RowVector3f P_mul_C_BM_transpose = projectionVector * C_BM_transpose;
-    const Eigen::Matrix3f C_SB_transpose = R_base_to_sensor.transpose();
+    // // Preparations for robot rotation Jacobian (J_q) to minimize computation for every point in point cloud.
+    // const Eigen::Matrix3f C_BM_transpose = R_map_to_base.transpose();
+    // const Eigen::RowVector3f P_mul_C_BM_transpose = projectionVector * C_BM_transpose;
+    // const Eigen::Matrix3f C_SB_transpose = R_base_to_sensor.transpose();
 
-    Eigen::Vector3d translationVector;
-    tf2::fromMsg(pc_transform.transform.translation, translationVector);
-    kindr::Position3D translationBaseToSensorInBaseFrame_;
-    translationBaseToSensorInBaseFrame_.toImplementation() = translationVector;
+    // Eigen::Vector3d translationVector;
+    // tf2::fromMsg(pc_transform.transform.translation, translationVector);
+    // kindr::Position3D translationBaseToSensorInBaseFrame_;
+    // translationBaseToSensorInBaseFrame_.toImplementation() = translationVector;
 
-    const Eigen::Matrix3f B_r_BS_skew =
-      kindr::getSkewMatrixFromVector(Eigen::Vector3f(translationBaseToSensorInBaseFrame_.toImplementation().cast<float>()));
+    // const Eigen::Matrix3f B_r_BS_skew =
+    //   kindr::getSkewMatrixFromVector(Eigen::Vector3f(translationBaseToSensorInBaseFrame_.toImplementation().cast<float>()));
 
-    for (const auto& [key, min_height] : min_height_update) {
-        const auto& [x, y] = key;
+    // for (const auto& [key, min_height] : min_height_update) {
+    //     const auto& [x, y] = key;
 
-        // Get the matching range value from the other map
-        auto it_range = update_range.find(key);
-        auto it_point_vector = update_point_vector.find(key);
-        if (it_range != update_range.end() && it_point_vector != update_point_vector.end()) {
-            float range = it_range->second;
-            const Eigen::Vector3f pointVector = it_point_vector->second;  // S_r_SP
+    //     // Get the matching range value from the other map
+    //     auto it_range = update_range.find(key);
+    //     auto it_point_vector = update_point_vector.find(key);
+    //     if (it_range != update_range.end() && it_point_vector != update_point_vector.end()) {
+    //         float range = it_range->second;
+    //         const Eigen::Vector3f pointVector = it_point_vector->second;  // S_r_SP
 
-            // Compute sensor covariance matrix (Sigma_S) with sensor model.
-            float varianceLateral = beamConstant + beamAngle * range;
-            varianceLateral *= varianceLateral;
+    //         // Compute sensor covariance matrix (Sigma_S) with sensor model.
+    //         float varianceLateral = beamConstant + beamAngle * range;
+    //         varianceLateral *= varianceLateral;
 
-            Eigen::Matrix3f sensorVariance = Eigen::Matrix3f::Zero();
-            sensorVariance.diagonal() << varianceLateral, varianceLateral, varianceNormal;
+    //         Eigen::Matrix3f sensorVariance = Eigen::Matrix3f::Zero();
+    //         sensorVariance.diagonal() << varianceLateral, varianceLateral, varianceNormal;
 
-            // Robot rotation Jacobian (J_q).
-            const Eigen::Matrix3f C_SB_transpose_times_S_r_SP_skew = kindr::getSkewMatrixFromVector(Eigen::Vector3f(C_SB_transpose * pointVector));
-            const Eigen::RowVector3f rotationJacobian = P_mul_C_BM_transpose * (C_SB_transpose_times_S_r_SP_skew + B_r_BS_skew);
+    //         // Robot rotation Jacobian (J_q).
+    //         const Eigen::Matrix3f C_SB_transpose_times_S_r_SP_skew = kindr::getSkewMatrixFromVector(Eigen::Vector3f(C_SB_transpose * pointVector));
+    //         const Eigen::RowVector3f rotationJacobian = P_mul_C_BM_transpose * (C_SB_transpose_times_S_r_SP_skew + B_r_BS_skew);
 
-            // Measurement variance for map (error propagation law).
-            float heightVariance = 0.0;  // sigma_p
-            heightVariance += rotationJacobian * rotationVariance * rotationJacobian.transpose();
-            //RCLCPP_INFO(this->get_logger(), "Pose Varience: %f ", heightVariance);
-            heightVariance += sensorJacobian * sensorVariance * sensorJacobian.transpose();
-            //RCLCPP_INFO(this->get_logger(), "Pose Varience + Sensor Variance: %f ", heightVariance);
+    //         // Measurement variance for map (error propagation law).
+    //         float heightVariance = 0.0;  // sigma_p
+    //         heightVariance += rotationJacobian * rotationVariance * rotationJacobian.transpose();
+    //         //RCLCPP_INFO(this->get_logger(), "Pose Varience: %f ", heightVariance);
+    //         heightVariance += sensorJacobian * sensorVariance * sensorJacobian.transpose();
+    //         //RCLCPP_INFO(this->get_logger(), "Pose Varience + Sensor Variance: %f ", heightVariance);
 
-            if(std::isnan((*height_estimate_)(x, y)) || std::isnan((*height_variance_)(x, y)))
-            {
-              (*height_estimate_)(x, y) = min_height;
-              (*height_variance_)(x, y) = heightVariance;
-            }
-            else
-            {
-              (*height_estimate_)(x, y) = ((heightVariance * (*height_estimate_)(x, y)) 
-                                            + ((*height_variance_)(x, y) * min_height))
-                                          / (heightVariance + (*height_variance_)(x, y));
-              (*height_variance_)(x, y) = ((*height_variance_)(x, y) * heightVariance)
-                                          / ((*height_variance_)(x, y) + heightVariance);
-            }
-        }
-    }
+    //         if(std::isnan((*height_estimate_)(x, y)) || std::isnan((*height_variance_)(x, y)))
+    //         {
+    //           (*height_estimate_)(x, y) = min_height;
+    //           (*height_variance_)(x, y) = heightVariance;
+    //         }
+    //         else
+    //         {
+    //           (*height_estimate_)(x, y) = ((heightVariance * (*height_estimate_)(x, y)) 
+    //                                         + ((*height_variance_)(x, y) * min_height))
+    //                                       / (heightVariance + (*height_variance_)(x, y));
+    //           (*height_variance_)(x, y) = ((*height_variance_)(x, y) * heightVariance)
+    //                                       / ((*height_variance_)(x, y) + heightVariance);
+    //         }
+    //     }
+    // }
 
 
     //=================================================================================================================
