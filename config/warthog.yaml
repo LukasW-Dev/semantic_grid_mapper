@@ -1,8 +1,8 @@
 semantic_grid_mapper_node:
   ros__parameters:
     resolution: 0.1
-    length: 16.0
-    height: 16.0
+    length: 15.5
+    height: 15.5
     log_odd_min: -100.0
     log_odd_max: 100.0
     map_frame_id: "odom"
@@ -49,8 +49,8 @@ semantic_grid_mapper_node:
         name: mean_in_radius
         type: gridMapFilters/MeanInRadiusFilter
         params:
-          input_layer: min_height
+          input_layer: height_estimate
           output_layer: min_height_smooth
-          radius: 0.45
+          radius: 0.25
 
     

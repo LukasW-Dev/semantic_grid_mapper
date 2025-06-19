@@ -646,10 +646,6 @@ private:
     const Eigen::RowVector3f P_mul_C_BM_transpose = projectionVector * C_BM_transpose;
     const Eigen::Matrix3f C_SB_transpose = R_base_to_sensor.transpose();
 
-    // geometry_msgs::msg::TransformStamped transformGeom;
-    // transformGeom = tf_buffer_.lookupTransform(robot_base_frame_id_, msg->header.frame_id, msg->header.stamp,
-    //                                                   rclcpp::Duration::from_seconds(1.0));
-
     Eigen::Vector3d translationVector;
     tf2::fromMsg(pc_transform.transform.translation, translationVector);
     kindr::Position3D translationBaseToSensorInBaseFrame_;

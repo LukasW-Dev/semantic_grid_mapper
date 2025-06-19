@@ -4,8 +4,8 @@ import os
 
 def generate_launch_description():
     
-    # config_path = os.path.expanduser('~/ros2_ws/src/semantic_grid_mapper/config/warthog.yaml')
-    config_path = os.path.expanduser('~/ros2_ws/src/semantic_grid_mapper/config/mercator.yaml')
+    config_path = os.path.expanduser('~/ros2_ws/src/semantic_grid_mapper/config/warthog.yaml')
+    # config_path = os.path.expanduser('~/ros2_ws/src/semantic_grid_mapper/config/mercator.yaml')
 
     return LaunchDescription([
         Node(
