@@ -51,6 +51,6 @@ semantic_grid_mapper_node:
         params:
           input_layer: min_height
           output_layer: min_height_smooth
-          radius: 0.25
+          radius: 0.45
 
     

@@ -497,67 +497,69 @@ private:
     bool right_laser_pandar = msg->header.frame_id == "right_laser_mount";
 
     pcl::PointCloud<pcl::PointXYZ> obstacle_cloud;
-    std::vector<float> beam_range;
-    std::vector<Eigen::Vector3f> point_vector;
+    // std::vector<float> beam_range;
+    // std::vector<Eigen::Vector3f> point_vector;
 
+    // {
+    // auto it_a = transformed_cloud.points.begin();
+    // auto it_b = pcl_cloud.points.begin();
+    // for (; it_a != transformed_cloud.points.end() && it_b != pcl_cloud.points.end(); ++it_a, ++it_b) {
+    for(const auto &point : transformed_cloud.points)
     {
-      auto it_a = transformed_cloud.points.begin();
-      auto it_b = pcl_cloud.points.begin();
-      for (; it_a != transformed_cloud.points.end() && it_b != pcl_cloud.points.end(); ++it_a, ++it_b) {
-          const auto& point = *it_a;
-          const auto& point_sensor = *it_b;
+        // const auto& point = *it_a;
+        // const auto& point_sensor = *it_b;
 
-        // Ignore points over 1.5m
-        if(point.z > 1.5){
-          continue;
-        }
-
-        // Points too close to the robot are ignored
-        double min_radius;
-        if(left_laser_pandar || right_laser_pandar) min_radius = 1.5;
-        if(top_ouster || front_ouster || front_livox) min_radius = 3.2;
-        if (!(std::hypot(point.x, point.y, point.z) >= min_radius)) {
-          continue;
-        }
-
-        // ========== Top Ouster ==========
-        // filter points in angle +- 20 degrees
-        if (top_ouster) {
-          double angle = std::atan2(point.y, point.x);
-          if (angle > -0.3491 && angle < 0.3491) { // -20 to +20 degrees
-            continue;
-          }
-        }
-
-        // filter points too close to the robot, since top ouster does not reach the ground within 3.5m radius
-        if (top_ouster && std::hypot(point.x, point.y, point.z) < 3.5) {
-          continue;
-        }
-
-        // ========== Front Ouster ==========
-        // filter points in negative x direction
-        if (front_ouster && point.x < 1) {
-          continue;
-        }
-
-        // ========== Front Livox ==========
-        // filter points in negative x direction
-        if (front_livox && point.x < 1) {
-          continue;
-        }
-
-        // ========== Left Laser Pandar / Right Laser Pandar ==========
-        // filter points in negative x direction
-        if((left_laser_pandar || right_laser_pandar) && point.x < 1)
-        {
-          continue;
-        }
-
-        obstacle_cloud.push_back(point);
-        beam_range.push_back(std::hypot(point_sensor.x, point_sensor.y, point_sensor.z));
-        point_vector.push_back(Eigen::Vector3f(point_sensor.x, point_sensor.y, point_sensor.z));
+      // Ignore points over 1.5m
+      if(point.z > 1.5){
+        continue;
       }
+
+      // Points too close to the robot are ignored
+      double min_radius;
+      if(left_laser_pandar || right_laser_pandar) min_radius = 1.5;
+      if(top_ouster || front_ouster || front_livox) min_radius = 3.2;
+      if (!(std::hypot(point.x, point.y, point.z) >= min_radius)) {
+        continue;
+      }
+
+      // ========== Top Ouster ==========
+      // filter points in angle +- 20 degrees
+      if (top_ouster) {
+        double angle = std::atan2(point.y, point.x);
+        if (angle > -0.3491 && angle < 0.3491) { // -20 to +20 degrees
+          continue;
+        }
+      }
+
+      // filter points too close to the robot, since top ouster does not reach the ground within 3.5m radius
+      if (top_ouster && std::hypot(point.x, point.y, point.z) < 3.5) {
+        continue;
+      }
+
+      // ========== Front Ouster ==========
+      // filter points in negative x direction
+      if (front_ouster && point.x < 1) {
+        continue;
+      }
+
+      // ========== Front Livox ==========
+      // filter points in negative x direction
+      if (front_livox && point.x < 1) {
+        continue;
+      }
+
+      // ========== Left Laser Pandar / Right Laser Pandar ==========
+      // filter points in negative x direction
+      if((left_laser_pandar || right_laser_pandar) && point.x < 1)
+      {
+        continue;
+      }
+
+      obstacle_cloud.push_back(point);
+      // beam_range.push_back(std::hypot(point_sensor.x, point_sensor.y, point_sensor.z));
+      // point_vector.push_back(Eigen::Vector3f(point_sensor.x, point_sensor.y, point_sensor.z));
     }
+    // }
 
     //=================================================================================================================
     // 4) Transform from the robot frame to the map frame
@@ -573,48 +575,50 @@ private:
     std::map<std::pair<int, int>, float> update_range;
     std::map<std::pair<int, int>, Eigen::Vector3f>  update_point_vector;
 
+    // {
+    // auto it_a = map_cloud_obstacle.points.begin();
+    // auto it_b = beam_range.begin();
+    // auto it_c = point_vector.begin();
+    // for (; it_a != map_cloud_obstacle.points.end() && it_b != beam_range.end() && it_c != point_vector.end(); ++it_a, ++it_b, it_c++) {
+    for(const auto &point : map_cloud_obstacle.points)
     {
-      auto it_a = map_cloud_obstacle.points.begin();
-      auto it_b = beam_range.begin();
-      auto it_c = point_vector.begin();
-      for (; it_a != map_cloud_obstacle.points.end() && it_b != beam_range.end() && it_c != point_vector.end(); ++it_a, ++it_b, it_c++) {
-          const auto& point = *it_a;
-          const auto& range = *it_b;
-          const auto& point_vector = *it_c;
+        // const auto& point = *it_a;
+        // const auto& range = *it_b;
+        // const auto& point_vector = *it_c;
 
-        // Check if the point is inside the map
-        grid_map::Position pos(point.x, point.y);
-        if (!map_.isInside(pos)) {
-          continue;
-        }
+      // Check if the point is inside the map
+      grid_map::Position pos(point.x, point.y);
+      if (!map_.isInside(pos)) {
+        continue;
+      }
 
-        // Update the min height layer
-        grid_map::Index idx;
-        map_.getIndex(pos, idx);
-        float min_height_val = (*min_height_)(idx(0), idx(1));
-        if (std::isnan(min_height_val) || point.z < min_height_val) {
-          (*min_height_)(idx(0), idx(1)) = point.z;
-          min_height_update[{idx(0), idx(1)}] = point.z;
-          update_range[{idx(0), idx(1)}] = range;
-          update_point_vector[{idx(0), idx(1)}] = point_vector;
-        }
+      // Update the min height layer
+      grid_map::Index idx;
+      map_.getIndex(pos, idx);
+      float min_height_val = (*min_height_)(idx(0), idx(1));
+      if (std::isnan(min_height_val) || point.z < min_height_val) {
+        (*min_height_)(idx(0), idx(1)) = point.z;
+        // min_height_update[{idx(0), idx(1)}] = point.z;
+        // update_range[{idx(0), idx(1)}] = range;
+        // update_point_vector[{idx(0), idx(1)}] = point_vector;
+      }
 
-        // Update obstacle hit count
-        if(point.z > (*min_height_)(idx(0), idx(1)) + max_veg_height_ && 
-          point.z < (*min_height_)(idx(0), idx(1)) + robot_height_) {
-          
-          // Check if the point is a obstacle class
-          if(std::isnan((*obstacle_class_)(idx(0), idx(1)))) continue;
-          std::tuple<uint8_t, uint8_t, uint8_t> color;
-          unpackRGB((*obstacle_class_)(idx(0), idx(1)), std::get<0>(color), std::get<1>(color), std::get<2>(color));
-          std::string cls_name = color_to_class_[color];
-          if(cls_name != "grass" && cls_name != "dirt" && cls_name != "gravel" && cls_name != "mud" && cls_name != "water")
-          {
-            (*obstacle_hit_count_)(idx(0), idx(1))++;
-          }
+      // Update obstacle hit count
+      if(point.z > (*min_height_smooth_)(idx(0), idx(1)) + max_veg_height_ && 
+        point.z < (*min_height_smooth_)(idx(0), idx(1)) + robot_height_) {
+        
+        // Check if the point is a obstacle class
+        if(std::isnan((*obstacle_class_)(idx(0), idx(1)))) continue;
+        std::tuple<uint8_t, uint8_t, uint8_t> color;
+        unpackRGB((*obstacle_class_)(idx(0), idx(1)), std::get<0>(color), std::get<1>(color), std::get<2>(color));
+        std::string cls_name = color_to_class_[color];
+        if(cls_name != "grass" && cls_name != "dirt" && cls_name != "gravel" && cls_name != "mud" && cls_name != "water")
+        {
+          (*obstacle_hit_count_)(idx(0), idx(1))++;
         }
       }
     }
+    // }
 
     // //=================================================================================================================
     // // 5) Update Height Estimate
@@ -713,8 +717,8 @@ private:
       map_.getIndex(pos, idx);
 
       // Update sky hit count
-      if(point.z > (*min_height_)(idx(0), idx(1)) + robot_height_ && 
-         point.z < (*min_height_)(idx(0), idx(1)) + max_sky_height_) {
+      if(point.z > (*min_height_smooth_)(idx(0), idx(1)) + robot_height_ && 
+         point.z < (*min_height_smooth_)(idx(0), idx(1)) + max_sky_height_) {
         (*sky_hit_count_)(idx(0), idx(1))++;
       }
     }
