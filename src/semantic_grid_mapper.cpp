@@ -136,6 +136,7 @@ private:
   rclcpp::Time last_update_stamp_;
 
   int pc_updates_;
+  int sm_updates_;
   message_filters::Cache<nav_msgs::msg::Odometry> robotPoseCache_;
   std::string robotPoseTopic_;
   int robotPoseCacheSize_;
@@ -369,6 +370,7 @@ public:
         std::bind(&SemanticGridMapper::applyFilterChain, this));
 
     pc_updates_ = 0;
+    sm_updates_ = 0;
 
     rmw_qos_profile_t qos_pose_profile{
       RMW_QOS_POLICY_HISTORY_KEEP_LAST,
@@ -818,6 +820,8 @@ private:
 
   void semanticPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
 
+    sm_updates_++;
+
     // Get Timestamp using chrono
     auto timestamp = std::chrono::steady_clock::now();
 
@@ -1005,8 +1009,9 @@ private:
 
   void applyFilterChain() {
 
-    RCLCPP_INFO(this->get_logger(), "%d PC updates", pc_updates_);
+    RCLCPP_INFO(this->get_logger(), "PC Updates: %d, SM Updates: %d", pc_updates_, sm_updates_);
     pc_updates_ = 0;
+    sm_updates_ = 0;
 
     // Map Iteration (iterate over whole map)
     for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
@@ -1044,8 +1049,8 @@ private:
 
     // Fill the obstacle zone
     //markAlphaShapeObstacleClusters(map_, "obstacle_zone", 2, this->get_logger());
-    morphologicalClose3x3(map_, "obstacle");
-    morphologicalClose3x3(map_, "sky_map");
+    morphologicalClose(map_, "obstacle", 4, 3);
+    morphologicalClose(map_, "sky_map", 4, 3);
 
     // Measure Obstacle Zone Time
     auto obstacle_zone_time = std::chrono::steady_clock::now();
@@ -1064,6 +1069,23 @@ private:
 
     // Copy min_height_smooth from min_height_filtered to map_
     map_["min_height_smooth"] = min_height_filtered["min_height_smooth"];
+
+    // grid_map::GridMap publish_map;
+    // publish_map.setGeometry(map_.getLength(), map_.getResolution(), map_.getPosition());
+    // publish_map.setFrameId(map_.getFrameId());
+    // publish_map.setTimestamp(map_.getTimestamp());
+    // std::vector<std::string> layers_to_publish = {
+    //     "min_height_smooth",
+    //     "obstacle",
+    //     "ground_class",
+    //     "obstacle_class"
+    // };
+
+    // for (const auto& layer : layers_to_publish) {
+    //     if (map_.exists(layer)) {
+    //         publish_map.add(layer, map_[layer]);
+    //     }
+    // }
 
     grid_map_msgs::msg::GridMap map_msg;
     map_msg = *grid_map::GridMapRosConverter::toMessage(map_);
