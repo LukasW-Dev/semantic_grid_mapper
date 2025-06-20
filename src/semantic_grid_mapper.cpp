@@ -604,6 +604,20 @@ private:
         // update_range[{idx(0), idx(1)}] = range;
         // update_point_vector[{idx(0), idx(1)}] = point_vector;
       }
+    }
+
+    for(const auto &point : map_cloud_sky.points)
+    {
+
+      // Check if the point is inside the map
+      grid_map::Position pos(point.x, point.y);
+      if (!map_.isInside(pos)) {
+        continue;
+      }
+
+      // Update the min height layer
+      grid_map::Index idx;
+      map_.getIndex(pos, idx);
 
       // Update obstacle hit count
       if(point.z > (*min_height_smooth_)(idx(0), idx(1)) + max_veg_height_ && 
@@ -815,7 +829,7 @@ private:
 
     last_update_stamp_ = msg->header.stamp;
     auto pc_cb_time = std::chrono::steady_clock::now();
-    RCLCPP_INFO(this->get_logger(), "PC %fms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
+    //RCLCPP_INFO(this->get_logger(), "PC %fms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
   }
 
   void semanticPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
@@ -1088,7 +1102,7 @@ private:
     // }
 
     grid_map_msgs::msg::GridMap map_msg;
-    map_msg = *grid_map::GridMapRosConverter::toMessage(map_);
+    map_msg = *grid_map::GridMapRosConverter::toMessage(min_height_filtered);
     map_msg.header.stamp = this->last_update_stamp_;
     grid_map_pub_->publish(map_msg);
     map_["min_height_old"] = map_["min_height"];
