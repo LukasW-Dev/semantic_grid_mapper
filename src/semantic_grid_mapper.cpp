@@ -372,17 +372,17 @@ public:
     pc_updates_ = 0;
     sm_updates_ = 0;
 
-    rmw_qos_profile_t qos_pose_profile{
-      RMW_QOS_POLICY_HISTORY_KEEP_LAST,
-      1,
-      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
-      RMW_QOS_POLICY_DURABILITY_VOLATILE,
-      RMW_QOS_DEADLINE_DEFAULT,
-      RMW_QOS_LIFESPAN_DEFAULT,
-      RMW_QOS_POLICY_LIVELINESS_SYSTEM_DEFAULT,
-      RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT,
-      false
-    };
+    // rmw_qos_profile_t qos_pose_profile{
+    //   RMW_QOS_POLICY_HISTORY_KEEP_LAST,
+    //   1,
+    //   RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
+    //   RMW_QOS_POLICY_DURABILITY_VOLATILE,
+    //   RMW_QOS_DEADLINE_DEFAULT,
+    //   RMW_QOS_LIFESPAN_DEFAULT,
+    //   RMW_QOS_POLICY_LIVELINESS_SYSTEM_DEFAULT,
+    //   RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT,
+    //   false
+    // };
 
     // robotPoseSubscriber_.subscribe(this, robotPoseTopic_,qos_pose_profile);
     // robotPoseCache_.connectInput(robotPoseSubscriber_);
@@ -455,7 +455,7 @@ private:
   void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
 
     // Get Timestamp using chrono
-    auto timestamp = std::chrono::steady_clock::now();
+    // auto timestamp = std::chrono::steady_clock::now();
     pc_updates_++;
     map_["obstacle_hit_count"].setConstant(0.0);
     map_["sky_hit_count"].setConstant(0.0);
@@ -517,7 +517,7 @@ private:
       }
 
       // Points too close to the robot are ignored
-      double min_radius;
+      double min_radius = 0.0;
       if(left_laser_pandar || right_laser_pandar) min_radius = 1.5;
       if(top_ouster || front_ouster || front_livox) min_radius = 3.2;
       if (!(std::hypot(point.x, point.y, point.z) >= min_radius)) {
@@ -828,7 +828,7 @@ private:
 
 
     last_update_stamp_ = msg->header.stamp;
-    auto pc_cb_time = std::chrono::steady_clock::now();
+    // auto pc_cb_time = std::chrono::steady_clock::now();
     //RCLCPP_INFO(this->get_logger(), "PC %fms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
   }
 
@@ -965,9 +965,9 @@ private:
       }
 
       // needed for log odd calculation
-      std::array<unsigned char, 3> max_class_rgb_ground;
+      std::array<unsigned char, 3> max_class_rgb_ground = {0, 0, 0};
       double max_log_odd_ground = log_odd_min_;
-      std::array<unsigned char, 3> max_class_rgb_obstacle;
+      std::array<unsigned char, 3> max_class_rgb_obstacle = {0, 0, 0};
       double max_log_odd_obstacle = log_odd_min_;
       // std::array<unsigned char, 3> max_class_rgb_sky;
       // double max_log_odd_sky = log_odd_min_;
