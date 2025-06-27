@@ -927,9 +927,9 @@ private:
         else if(point.z >= (*min_height_smooth_)(idx(0), idx(1)) + max_veg_height_ 
         && point.z < (*min_height_smooth_)(idx(0), idx(1)) + robot_height_) {
           // only add hit if class is not grass or dirt or gravel
-          if (cls_name != "grass" && cls_name != "dirt" && cls_name != "gravel" && cls_name != "mud" && cls_name != "water") {
-            (*(cls_[cls_name].hit_obstacle))(idx(0), idx(1)) += 1.0;
-          }
+          //if (cls_name != "grass" && cls_name != "dirt" && cls_name != "gravel" && cls_name != "mud" && cls_name != "water") {
+          (*(cls_[cls_name].hit_obstacle))(idx(0), idx(1)) += 1.0;
+          //}
         }
       }
 
