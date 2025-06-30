@@ -497,6 +497,8 @@ private:
     bool front_livox = msg->header.frame_id == "front_livox_link";
     bool left_laser_pandar = msg->header.frame_id == "left_laser_mount";
     bool right_laser_pandar = msg->header.frame_id == "right_laser_mount";
+    bool top_livox = msg->header.frame_id == "top_livox_frame";
+    bool bottom_livox = msg->header.frame_id == "bottom_livox_frame";
 
     pcl::PointCloud<pcl::PointXYZ> obstacle_cloud;
     // std::vector<float> beam_range;
@@ -510,6 +512,12 @@ private:
     {
         // const auto& point = *it_a;
         // const auto& point_sensor = *it_b;
+
+      // Top livox is not used for min_height estimation
+      if(top_livox)
+      {
+        break;
+      }
 
       // Ignore points over 1.5m
       if(point.z > 1.5){
@@ -554,6 +562,12 @@ private:
       // filter points in negative x direction
       if((left_laser_pandar || right_laser_pandar) && point.x < 1)
       {
+        continue;
+      }
+
+      // ========== Bottom Livox ==========
+      // filter points in negative x direction
+      if (bottom_livox && point.x < 1.5) {
         continue;
       }
 
@@ -783,6 +797,24 @@ private:
 
     // ========== Front Livox ==========
     else if(front_livox)
+    {
+      double angle_min = wrapTo2Pi(-80.0 * (M_PI / 180.0) + yaw);
+      double angle_max = wrapTo2Pi(80.0 * (M_PI / 180.0) + yaw);
+
+      grid_map::Polygon sector = createAnnularSectorPolygon(1.5, clipped_range, angle_min, angle_max);
+
+      for (grid_map::PolygonIterator it(map_, sector); !it.isPastEnd(); ++it) {
+        grid_map::Index idx = *it;
+        
+        // Process each cell inside the sector
+        double prob = (*obstacle_hit_count_)(idx(0), idx(1)) > 0 ? 1.0 : 0.2;
+        (*obstacle_zone_)(idx(0), idx(1)) = update_log_odds((*obstacle_zone_)(idx(0), idx(1)), prob_to_log_odds(prob));
+        (*obstacle_zone_)(idx(0), idx(1)) = std::clamp((*obstacle_zone_)(idx(0), idx(1)), log_odd_min_, log_odd_max_);
+      }
+    }
+
+    // ========== Bottom Livox ==========
+    else if(bottom_livox)
     {
       double angle_min = wrapTo2Pi(-80.0 * (M_PI / 180.0) + yaw);
       double angle_max = wrapTo2Pi(80.0 * (M_PI / 180.0) + yaw);
