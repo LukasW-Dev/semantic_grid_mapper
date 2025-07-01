@@ -1,0 +1,56 @@
+semantic_grid_mapper_node:
+  ros__parameters:
+    resolution: 0.1
+    length: 15.5
+    height: 15.5
+    log_odd_min: -100.0
+    log_odd_max: 100.0
+    map_frame_id: "odom"
+    use_sim_time: false
+    semantic_pointcloud_topic: "/rgb_cloud"
+    pointcloud_topic1: "/livox/lidar_192_168_101_103"
+    pointcloud_topic2: "/livox/lidar_192_168_101_104"
+    pointcloud_topic3: "None"
+    grid_map_topic: "semantic_grid_map"
+    robot_base_frame_id: "base_link"
+    robot_height: 1.0
+    max_veg_height: 0.3
+    max_sky_height: 2.0
+    robot_pose_with_covariance_topic: "/fixposition/odometry_smooth"
+    robot_pose_cache_size: 400
+
+    filters:
+      # filter1:
+        # name: buffer_normalizer
+        # type: gridMapFilters/BufferNormalizerFilter
+
+      # filter2: # Duplicate layer.
+      #   name: duplicate
+      #   type: gridMapFilters/DuplicationFilter
+      #   params:
+      #     input_layer: ...
+      #     output_layer: ...
+
+      # filter2:  # Delete color layer.
+      #   name: delete_original_layers
+      #   type: gridMapFilters/DeletionFilter
+      #   params: 
+      #     layers: [color] # List of layers.
+
+      # filter3:  # Fill holes in the map with inpainting.
+      #   name: inpaint
+      #   type: gridMapCv/InpaintFilter
+      #   params:
+      #     input_layer: elevation
+      #     output_layer: elevation_inpainted
+      #     radius: 0.05
+
+      filter1:  # Reduce noise with a radial blurring filter.
+        name: mean_in_radius
+        type: gridMapFilters/MeanInRadiusFilter
+        params:
+          input_layer: min_height
+          output_layer: min_height_smooth
+          radius: 0.45
+
+    
