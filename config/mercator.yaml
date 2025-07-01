@@ -1,20 +1,20 @@
 semantic_grid_mapper_node:
   ros__parameters:
     resolution: 0.1
-    length: 16.0
-    height: 16.0
+    length: 15.5
+    height: 15.5
     log_odd_min: -100.0
     log_odd_max: 100.0
-    map_frame_id: "map"
+    map_frame_id: "odom"
     use_sim_time: false
     semantic_pointcloud_topic: "/rgb_cloud"
-    pointcloud_topic1: "/left_laser/pandar"
-    pointcloud_topic2: "/right_laser/pandar"
+    pointcloud_topic1: "/left_laser/lidar_points"
+    pointcloud_topic2: "/right_laser/lidar_points"
     pointcloud_topic3: "None"
 
     grid_map_topic: "semantic_grid_map"
     robot_base_frame_id: "base_link"
-    robot_height: 1.0
+    robot_height: 1.5
     max_veg_height: 0.3
     max_sky_height: 2.0
     robot_pose_with_covariance_topic: "ukf_pose"
