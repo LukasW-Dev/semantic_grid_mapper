@@ -454,6 +454,8 @@ private:
 
   void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
 
+    //RCLCPP_INFO(this->get_logger(), "Enter PC Cb");
+
     // Get Timestamp using chrono
     // auto timestamp = std::chrono::steady_clock::now();
     pc_updates_++;
@@ -470,9 +472,11 @@ private:
       double robot_y = robot_transform.transform.translation.y;
       map_.move(grid_map::Position(robot_x, robot_y));
     } catch (const tf2::TransformException &ex) {
-      RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
+      RCLCPP_WARN(this->get_logger(), "Transform 1 failed: %s", ex.what());
       return;
     }
+
+    //RCLCPP_INFO(this->get_logger(), "Debug 1");
 
     //=================================================================================================================
     // 2) Transform the points from sensor frame into robot frame
@@ -482,12 +486,14 @@ private:
     try {
       pc_transform = tf_buffer_.lookupTransform(robot_base_frame_id_, msg->header.frame_id, tf2::TimePointZero);
     } catch (const tf2::TransformException &ex) {
-      RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
+      RCLCPP_WARN(this->get_logger(), "Transform 2 failed: %s", ex.what());
       return;
     }
     pcl::PointCloud<pcl::PointXYZ> transformed_cloud;
     Eigen::Affine3d T_base_to_sensor = tf2::transformToEigen(pc_transform.transform);
     pcl::transformPointCloud(pcl_cloud, transformed_cloud, T_base_to_sensor);
+
+    //RCLCPP_INFO(this->get_logger(), "Debug 2");
 
     //=================================================================================================================
     // 3) Filter points
@@ -577,13 +583,21 @@ private:
     }
     // }
 
+    //RCLCPP_INFO(this->get_logger(), "Debug 3");
+
     //=================================================================================================================
     // 4) Transform from the robot frame to the map frame
+
+    bool obstacle_cloud_valid = !obstacle_cloud.empty();
+    bool transformed_cloud_valid = !transformed_cloud.empty();
+
+
     pcl::PointCloud<pcl::PointXYZ> map_cloud_obstacle;
     pcl::PointCloud<pcl::PointXYZ> map_cloud_sky;
     Eigen::Affine3d T_map_to_base = tf2::transformToEigen(robot_transform.transform);
-    pcl::transformPointCloud(obstacle_cloud, map_cloud_obstacle, T_map_to_base);
-    pcl::transformPointCloud(transformed_cloud, map_cloud_sky, T_map_to_base);
+
+    if(obstacle_cloud_valid) pcl::transformPointCloud(obstacle_cloud, map_cloud_obstacle, T_map_to_base);
+    if(transformed_cloud_valid) pcl::transformPointCloud(transformed_cloud, map_cloud_sky, T_map_to_base);
    
     //=================================================================================================================
     // 5) Point Iteration Obstacle / Min Height
@@ -596,58 +610,72 @@ private:
     // auto it_b = beam_range.begin();
     // auto it_c = point_vector.begin();
     // for (; it_a != map_cloud_obstacle.points.end() && it_b != beam_range.end() && it_c != point_vector.end(); ++it_a, ++it_b, it_c++) {
-    for(const auto &point : map_cloud_obstacle.points)
+    if(obstacle_cloud_valid)
     {
-        // const auto& point = *it_a;
-        // const auto& range = *it_b;
-        // const auto& point_vector = *it_c;
+      for(const auto &point : map_cloud_obstacle.points)
+      {
+          // const auto& point = *it_a;
+          // const auto& range = *it_b;
+          // const auto& point_vector = *it_c;
 
-      // Check if the point is inside the map
-      grid_map::Position pos(point.x, point.y);
-      if (!map_.isInside(pos)) {
-        continue;
-      }
+        // Check if the point is inside the map
+        grid_map::Position pos(point.x, point.y);
+        if (!map_.isInside(pos)) {
+          continue;
+        }
 
-      // Update the min height layer
-      grid_map::Index idx;
-      map_.getIndex(pos, idx);
-      float min_height_val = (*min_height_)(idx(0), idx(1));
-      if (std::isnan(min_height_val) || point.z < min_height_val) {
-        (*min_height_)(idx(0), idx(1)) = point.z;
-        // min_height_update[{idx(0), idx(1)}] = point.z;
-        // update_range[{idx(0), idx(1)}] = range;
-        // update_point_vector[{idx(0), idx(1)}] = point_vector;
-      }
-    }
-
-    for(const auto &point : map_cloud_sky.points)
-    {
-
-      // Check if the point is inside the map
-      grid_map::Position pos(point.x, point.y);
-      if (!map_.isInside(pos)) {
-        continue;
-      }
-
-      // Update the min height layer
-      grid_map::Index idx;
-      map_.getIndex(pos, idx);
-
-      // Update obstacle hit count
-      if(point.z > (*min_height_smooth_)(idx(0), idx(1)) + max_veg_height_ && 
-        point.z < (*min_height_smooth_)(idx(0), idx(1)) + robot_height_) {
-        
-        // Check if the point is a obstacle class
-        if(std::isnan((*obstacle_class_)(idx(0), idx(1)))) continue;
-        std::tuple<uint8_t, uint8_t, uint8_t> color;
-        unpackRGB((*obstacle_class_)(idx(0), idx(1)), std::get<0>(color), std::get<1>(color), std::get<2>(color));
-        std::string cls_name = color_to_class_[color];
-        if(cls_name != "grass" && cls_name != "dirt" && cls_name != "gravel" && cls_name != "mud" && cls_name != "water")
-        {
-          (*obstacle_hit_count_)(idx(0), idx(1))++;
+        // Update the min height layer
+        grid_map::Index idx;
+        map_.getIndex(pos, idx);
+        float min_height_val = (*min_height_)(idx(0), idx(1));
+        if (std::isnan(min_height_val) || point.z < min_height_val) {
+          (*min_height_)(idx(0), idx(1)) = point.z;
+          // min_height_update[{idx(0), idx(1)}] = point.z;
+          // update_range[{idx(0), idx(1)}] = range;
+          // update_point_vector[{idx(0), idx(1)}] = point_vector;
         }
       }
     }
+
+    //RCLCPP_INFO(this->get_logger(), "Debug 4");
+
+    if(transformed_cloud_valid)
+    {
+      for(const auto &point : map_cloud_sky.points)
+      {
+
+        // Check if the point is inside the map
+        grid_map::Position pos(point.x, point.y);
+        if (!map_.isInside(pos)) {
+          continue;
+        }
+
+        grid_map::Index idx;
+        map_.getIndex(pos, idx);
+
+        // Update obstacle hit count
+        if(point.z > (*min_height_smooth_)(idx(0), idx(1)) + max_veg_height_ && 
+          point.z < (*min_height_smooth_)(idx(0), idx(1)) + robot_height_) {
+          
+          // Check if the point is a obstacle class
+          if(std::isnan((*obstacle_class_)(idx(0), idx(1)))) continue;
+          std::tuple<uint8_t, uint8_t, uint8_t> color;
+          unpackRGB((*obstacle_class_)(idx(0), idx(1)), std::get<0>(color), std::get<1>(color), std::get<2>(color));
+          std::string cls_name = color_to_class_[color];
+          if(cls_name != "grass" && cls_name != "dirt" && cls_name != "gravel" && cls_name != "mud" && cls_name != "water")
+          {
+            (*obstacle_hit_count_)(idx(0), idx(1))++;
+          }
+        }
+
+        // Update sky hit count
+        if(point.z > (*min_height_smooth_)(idx(0), idx(1)) + robot_height_ && 
+          point.z < (*min_height_smooth_)(idx(0), idx(1)) + max_sky_height_) {
+          (*sky_hit_count_)(idx(0), idx(1))++;
+        }
+      }
+    }
+
     // }
 
     // //=================================================================================================================
@@ -732,26 +760,30 @@ private:
     //     }
     // }
 
+    //RCLCPP_INFO(this->get_logger(), "Debug 5");
 
-    //=================================================================================================================
-    // 6) Point Iteration Sky
-    for (const auto &point : map_cloud_sky.points) {
 
-      // Check if the point is inside the map
-      grid_map::Position pos(point.x, point.y);
-      if (!map_.isInside(pos)) {
-        continue;
-      }
+    // //=================================================================================================================
+    // // 6) Point Iteration Sky
+    // for (const auto &point : map_cloud_sky.points) {
 
-      grid_map::Index idx;
-      map_.getIndex(pos, idx);
+    //   // Check if the point is inside the map
+    //   grid_map::Position pos(point.x, point.y);
+    //   if (!map_.isInside(pos)) {
+    //     continue;
+    //   }
 
-      // Update sky hit count
-      if(point.z > (*min_height_smooth_)(idx(0), idx(1)) + robot_height_ && 
-         point.z < (*min_height_smooth_)(idx(0), idx(1)) + max_sky_height_) {
-        (*sky_hit_count_)(idx(0), idx(1))++;
-      }
-    }
+    //   grid_map::Index idx;
+    //   map_.getIndex(pos, idx);
+
+    //   // Update sky hit count
+    //   if(point.z > (*min_height_smooth_)(idx(0), idx(1)) + robot_height_ && 
+    //      point.z < (*min_height_smooth_)(idx(0), idx(1)) + max_sky_height_) {
+    //     (*sky_hit_count_)(idx(0), idx(1))++;
+    //   }
+    // }
+
+    //RCLCPP_INFO(this->get_logger(), "Debug 6");
 
     //=================================================================================================================
     // 6) Map Iteration
@@ -866,6 +898,8 @@ private:
 
   void semanticPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
 
+    //RCLCPP_INFO(this->get_logger(), "Enter SM Cb");
+
     sm_updates_++;
 
     // Get Timestamp using chrono
@@ -880,7 +914,7 @@ private:
       double robot_y = robot_transform.transform.translation.y;
       map_.move(grid_map::Position(robot_x, robot_y));
     } catch (const tf2::TransformException &ex) {
-      RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
+      RCLCPP_WARN(this->get_logger(), "Transform 3 failed: %s", ex.what());
       return;
     }
 
@@ -894,7 +928,7 @@ private:
     try {
       pc_transform = tf_buffer_.lookupTransform(map_frame_id_, msg->header.frame_id, msg->header.stamp);
     } catch (const tf2::TransformException &ex) {
-      RCLCPP_WARN(this->get_logger(), "Transform failed: %s", ex.what());
+      RCLCPP_WARN(this->get_logger(), "Transform 4 failed: %s", ex.what());
       return;
     }
     pcl::PointCloud<pcl::PointXYZRGBL> transformed_cloud;
@@ -1054,6 +1088,8 @@ private:
   }
 
   void applyFilterChain() {
+
+    //RCLCPP_INFO(this->get_logger(), "Enter TM Cb");
 
     RCLCPP_INFO(this->get_logger(), "PC Updates: %d, SM Updates: %d", pc_updates_, sm_updates_);
     pc_updates_ = 0;
