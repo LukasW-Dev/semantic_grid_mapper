@@ -308,29 +308,33 @@ public:
       // map_[name + "_sky"].setConstant(0.0); // log-odds 0 => p = 0.5
     }
 
-    rclcpp::QoS qos_profile(rclcpp::KeepLast(1));
-    qos_profile.durability(RMW_QOS_POLICY_DURABILITY_VOLATILE);
-    qos_profile.reliability(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT);
+    rclcpp::QoS pc_qos_profile(rclcpp::KeepLast(1));
+    pc_qos_profile.durability(RMW_QOS_POLICY_DURABILITY_VOLATILE);
+    pc_qos_profile.reliability(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT);
+
+    rclcpp::QoS sm_qos_profile(rclcpp::KeepLast(5));
+    sm_qos_profile.durability(RMW_QOS_POLICY_DURABILITY_VOLATILE);
+    sm_qos_profile.reliability(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT);
 
     semantic_cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-        semantic_pointcloud_topic_, qos_profile,
+        semantic_pointcloud_topic_, sm_qos_profile,
         std::bind(&SemanticGridMapper::semanticPointCloudCallback, this, _1));
 
     pointcloud_sub1_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-        pointcloud_topic1_, qos_profile,
+        pointcloud_topic1_, pc_qos_profile,
         std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
 
     if(pointcloud_topic2_ != "None")
     {
       pointcloud_sub2_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-          pointcloud_topic2_, qos_profile,
+          pointcloud_topic2_, pc_qos_profile,
           std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
     }
 
     if(pointcloud_topic3_ != "None")
     {
       pointcloud_sub3_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-          pointcloud_topic3_, qos_profile,
+          pointcloud_topic3_, pc_qos_profile,
           std::bind(&SemanticGridMapper::pointCloudCallback, this, _1));
     }
 
