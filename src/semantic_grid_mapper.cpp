@@ -461,7 +461,7 @@ private:
     //RCLCPP_INFO(this->get_logger(), "Enter PC Cb");
 
     // Get Timestamp using chrono
-    // auto timestamp = std::chrono::steady_clock::now();
+    auto timestamp = std::chrono::steady_clock::now();
     pc_updates_++;
     map_["obstacle_hit_count"].setConstant(0.0);
     map_["sky_hit_count"].setConstant(0.0);
@@ -896,8 +896,8 @@ private:
 
 
     last_update_stamp_ = msg->header.stamp;
-    // auto pc_cb_time = std::chrono::steady_clock::now();
-    //RCLCPP_INFO(this->get_logger(), "PC %fms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
+    auto pc_cb_time = std::chrono::steady_clock::now();
+    RCLCPP_INFO(this->get_logger(), "PC %fms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
   }
 
   void semanticPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
@@ -1088,6 +1088,9 @@ private:
 
     }
 
+    auto pc_cb_time = std::chrono::steady_clock::now();
+    RCLCPP_INFO(this->get_logger(), "SM %fms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
+
     last_update_stamp_ = msg->header.stamp;
   }
 
@@ -1176,7 +1179,7 @@ private:
     grid_map_msgs::msg::GridMap map_msg;
     map_msg = *grid_map::GridMapRosConverter::toMessage(min_height_filtered);
     map_msg.header.stamp = this->last_update_stamp_;
-    grid_map_pub_->publish(map_msg);
+    grid_map_pub_->publish(std::move(map_msg));
     map_["min_height_old"] = map_["min_height"];
     map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
     // map_["obstacle_zone"].setConstant(std::numeric_limits<float>::quiet_NaN());
