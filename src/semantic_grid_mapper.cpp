@@ -146,6 +146,11 @@ public:
       : Node("semantic_grid_mapper"), tf_buffer_(this->get_clock()),
         tf_listener_(tf_buffer_), filterChain_("grid_map::GridMap") {
 
+    // Set use_sim_time before doing anything else
+    bool use_sim_time = this->get_parameter("use_sim_time").as_bool();
+    this->set_parameter(rclcpp::Parameter("use_sim_time", use_sim_time));
+    RCLCPP_INFO(this->get_logger(), "use_sim_time: %s", use_sim_time ? "true" : "false");
+
     // Declare all parameters expected from the YAML file
     this->declare_parameter<double>("resolution");
     this->declare_parameter<double>("length");
@@ -192,9 +197,6 @@ public:
 
     this->get_parameter("robot_pose_with_covariance_topic", robotPoseTopic_);  
     this->get_parameter("robot_pose_cache_size", robotPoseCacheSize_);
-
-    this->get_parameter("use_sim_time", use_sim_time_);
-    this->set_parameter(rclcpp::Parameter("use_sim_time", use_sim_time_));
 
     this->get_parameter("filter_chain_parameter_name", filterChainParametersName_);
     RCLCPP_INFO(this->get_logger(), "Filter chain parameter name: %s", filterChainParametersName_.c_str());
@@ -1159,25 +1161,25 @@ private:
     // Copy min_height_smooth from min_height_filtered to map_
     map_["min_height_smooth"] = min_height_filtered["min_height_smooth"];
 
-    // grid_map::GridMap publish_map;
-    // publish_map.setGeometry(map_.getLength(), map_.getResolution(), map_.getPosition());
-    // publish_map.setFrameId(map_.getFrameId());
-    // publish_map.setTimestamp(map_.getTimestamp());
-    // std::vector<std::string> layers_to_publish = {
-    //     "min_height_smooth",
-    //     "obstacle",
-    //     "ground_class",
-    //     "obstacle_class"
-    // };
+    // Create a full copy including geometry and indexing
+    grid_map::GridMap publish_map(map_);
 
-    // for (const auto& layer : layers_to_publish) {
-    //     if (map_.exists(layer)) {
-    //         publish_map.add(layer, map_[layer]);
-    //     }
-    // }
+    std::vector<std::string> layers_to_publish = {
+    "min_height_smooth",
+    "obstacle",
+    "ground_class",
+    "obstacle_class",
+    "sky_map"};
+
+    // Now remove unwanted layers
+    for (const auto& layer : map_.getLayers()) {
+      if (std::find(layers_to_publish.begin(), layers_to_publish.end(), layer) == layers_to_publish.end()) {
+        publish_map.erase(layer);
+      }
+    }
 
     grid_map_msgs::msg::GridMap map_msg;
-    map_msg = *grid_map::GridMapRosConverter::toMessage(min_height_filtered);
+    map_msg = *grid_map::GridMapRosConverter::toMessage(publish_map);
     map_msg.header.stamp = this->last_update_stamp_;
     grid_map_pub_->publish(std::move(map_msg));
     map_["min_height_old"] = map_["min_height"];
