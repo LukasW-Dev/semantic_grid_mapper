@@ -12,12 +12,14 @@ semantic_grid_mapper_node:
     pointcloud_topic2: "/top_os/points"
     pointcloud_topic3: "/livox/lidar_192_168_100_116"
     grid_map_topic: "semantic_grid_map"
-    robot_base_frame_id: "base_link"
+    robot_base_frame_id: "base_footprint"
     robot_height: 1.0
     max_veg_height: 0.3
     max_sky_height: 2.0
     robot_pose_with_covariance_topic: "/fixposition/odometry_smooth"
     robot_pose_cache_size: 400
+    evaluation: false
+    footprint: [0.76, 0.69, 0.76, -0.69, -0.76, -0.69, -0.76, 0.69]
 
     filters:
       # filter1:

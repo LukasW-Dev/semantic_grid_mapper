@@ -2,6 +2,7 @@
 
 #include <geometry_msgs/msg/transform.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <grid_map_core/TypeDefs.hpp>
 #include <grid_map_msgs/msg/grid_map.hpp>
 #include <grid_map_ros/grid_map_ros.hpp>
 #include <pcl/point_cloud.h>
@@ -133,6 +134,10 @@ private:
   grid_map::Matrix* sky_hit_count_;
   grid_map::Matrix* sky_;
 
+  grid_map::Matrix* eval_obstacle_marker_;
+  grid_map::Matrix* eval_robot_marker_;
+  grid_map::Matrix* eval_intersect_;
+
   rclcpp::Time last_update_stamp_;
 
   int pc_updates_;
@@ -140,6 +145,11 @@ private:
   message_filters::Cache<nav_msgs::msg::Odometry> robotPoseCache_;
   std::string robotPoseTopic_;
   int robotPoseCacheSize_;
+
+  bool evaluation_;
+  int total_obstacles_;
+  int total_intersections_;
+  std::vector<double> footprint_;
 
 public:
   SemanticGridMapper()
@@ -175,6 +185,8 @@ public:
     this->declare_parameter("robot_pose_with_covariance_topic", std::string("/pose"));
     this->declare_parameter("robot_pose_cache_size", 200);
 
+    this->declare_parameter("evaluation", false);
+
     // Retrieve and store parameter values
     this->get_parameter("resolution", resolution_);
     this->get_parameter("length", length_);
@@ -200,6 +212,17 @@ public:
 
     this->get_parameter("filter_chain_parameter_name", filterChainParametersName_);
     RCLCPP_INFO(this->get_logger(), "Filter chain parameter name: %s", filterChainParametersName_.c_str());
+
+    this->get_parameter("evaluation", evaluation_);
+    RCLCPP_INFO(this->get_logger(), "Evaluation: %s", evaluation_ ? "active" : "inactive");
+
+    this->declare_parameter("footprint", std::vector<double>{});
+    this->get_parameter("footprint", footprint_);
+
+    for(auto point : footprint_)
+    {
+      RCLCPP_INFO(this->get_logger(), "Point: %f", point);
+    }
 
     class_names_ = {"bush",          "dirt",       "fence",    "grass",
                     "gravel",        "log",        "mud",      "object",
@@ -281,6 +304,18 @@ public:
     map_.add("sky_map"); 
     map_["sky_map"].setConstant(0.0);
     sky_ = &map_["sky_map"];
+
+    if(evaluation_)
+    {
+      map_.add("eval_obstacle_marker");
+      eval_obstacle_marker_ = &map_["eval_obstacle_marker"];
+      map_.add("eval_robot_marker");
+      eval_robot_marker_ = &map_["eval_robot_marker"];
+      map_.add("eval_intersect");
+      eval_intersect_ = &map_["eval_intersect"];
+    }
+    total_obstacles_ = 0;
+    total_intersections_ = 0;
   
     map_.add("min_height");
     map_.add("min_height_old");
@@ -1140,8 +1175,77 @@ private:
 
     // Fill the obstacle zone
     //markAlphaShapeObstacleClusters(map_, "obstacle_zone", 2, this->get_logger());
-    morphologicalClose(map_, "obstacle", 4, 3);
+    morphologicalClose(map_, "obstacle", 3, 3);
     morphologicalClose(map_, "sky_map", 4, 3);
+
+    // Map Iteration (iterate over whole map)
+    if(evaluation_)
+    {
+      for (grid_map::GridMapIterator it(map_); !it.isPastEnd(); ++it) {
+        const size_t i = it.getLinearIndex();
+        if((*obstacle_)(i) == 1000 && (*eval_obstacle_marker_)(i) != 1.0)
+        {
+          (*eval_obstacle_marker_)(i) = 1.0;
+          total_obstacles_++;
+        }
+
+        if((*eval_obstacle_marker_)(i) == 1.0 && (*eval_robot_marker_)(i) == 1.0 && (*eval_intersect_)(i) != 1.0)
+        {
+          (*eval_intersect_)(i) = 1.0;
+          total_intersections_++;
+        }
+
+      }
+      RCLCPP_INFO(this->get_logger(), "Total Obstacles: %d, Total Intersections: %d", total_obstacles_, total_intersections_);
+
+      // Transform robot footprint to map
+      geometry_msgs::msg::TransformStamped robot_transform;
+      try {
+        robot_transform = tf_buffer_.lookupTransform(map_frame_id_, robot_base_frame_id_, tf2::TimePointZero);
+      } catch (const tf2::TransformException &ex) {
+        RCLCPP_WARN(this->get_logger(), "Footprint Transform failed: %s", ex.what());
+        return;
+      }
+
+      // Extract translation
+      double tx = robot_transform.transform.translation.x;
+      double ty = robot_transform.transform.translation.y;
+
+      // Extract yaw from quaternion
+      tf2::Quaternion q(
+          robot_transform.transform.rotation.x,
+          robot_transform.transform.rotation.y,
+          robot_transform.transform.rotation.z,
+          robot_transform.transform.rotation.w
+      );
+      double roll, pitch, yaw;
+      tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+
+      // Prepare transformed footprint
+      std::vector<std::pair<double, double>> transformed_footprint;
+      grid_map::Polygon polygon_footprint;
+      for (size_t i = 0; i < footprint_.size(); i += 2) {
+          double x = footprint_[i];
+          double y = footprint_[i + 1];
+
+          // Rotate and translate
+          double x_map = std::cos(yaw) * x - std::sin(yaw) * y + tx;
+          double y_map = std::sin(yaw) * x + std::cos(yaw) * y + ty;
+
+          transformed_footprint.emplace_back(x_map, y_map);
+          polygon_footprint.addVertex(grid_map::Position(x_map, y_map));
+          //RCLCPP_INFO(this->get_logger(), "Footprint (robot): (%.2f, %.2f) → (map): (%.2f, %.2f)", x, y, x_map, y_map);
+      }
+
+      for (grid_map::PolygonIterator it(map_, polygon_footprint); !it.isPastEnd(); ++it) {
+        grid_map::Index idx = *it;
+        
+        // Process each cell inside the sector
+        (*eval_robot_marker_)(idx(0), idx(1)) = 1.0;// packRGB(0, 255, 0);
+      }
+
+
+    }
 
     // Measure Obstacle Zone Time
     auto obstacle_zone_time = std::chrono::steady_clock::now();
@@ -1169,7 +1273,9 @@ private:
     "obstacle",
     "ground_class",
     "obstacle_class",
-    "sky_map"};
+    "sky_map",
+    "eval_obstacle_marker",
+    "eval_robot_marker"};
 
     // Now remove unwanted layers
     for (const auto& layer : map_.getLayers()) {
@@ -1183,7 +1289,7 @@ private:
     map_msg.header.stamp = this->last_update_stamp_;
     grid_map_pub_->publish(std::move(map_msg));
     map_["min_height_old"] = map_["min_height"];
-    map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
+    // map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
     // map_["obstacle_zone"].setConstant(std::numeric_limits<float>::quiet_NaN());
   }
 
