@@ -23,7 +23,7 @@
 #include <string>
 
 #include "morphology.cpp"
-// #include "cluster.cpp"
+#include "cluster.cpp"
 
 #include <functional> // for std::hash
 
@@ -72,6 +72,16 @@ struct ClassLayers {
   std::array<unsigned char,3> rgb;
 };
 
+bool isObstacle(std::string name)
+{
+  if(name == "tree-foliage" || name == "log" || name == "rock" || name == "tree-trunk"
+    || name == "fence" || name == "object" || name == "structure")
+  {
+    return true;
+  }
+  return false;
+}
+
 using std::placeholders::_1;
 
 class SemanticGridMapper : public rclcpp::Node {
@@ -86,6 +96,8 @@ private:
   double robot_height_;
   double max_veg_height_;
   double max_sky_height_;
+
+  int robot_coverage_;
 
   std::string semantic_pointcloud_topic_;
   std::string pointcloud_topic1_;
@@ -137,6 +149,7 @@ private:
   grid_map::Matrix* eval_obstacle_marker_;
   grid_map::Matrix* eval_robot_marker_;
   grid_map::Matrix* eval_intersect_;
+  grid_map::Matrix* visualization_;
 
   rclcpp::Time last_update_stamp_;
 
@@ -147,13 +160,15 @@ private:
   int robotPoseCacheSize_;
 
   bool evaluation_;
+  bool use_semantic_;
+  int scenario_;
   int total_obstacles_;
   int total_intersections_;
   std::vector<double> footprint_;
 
 public:
   SemanticGridMapper()
-      : Node("semantic_grid_mapper"), tf_buffer_(this->get_clock()),
+      : Node("semantic_grid_mapper"), tf_buffer_(this->get_clock(), tf2::durationFromSec(60.0)),
         tf_listener_(tf_buffer_), filterChain_("grid_map::GridMap") {
 
     // Set use_sim_time before doing anything else
@@ -186,6 +201,8 @@ public:
     this->declare_parameter("robot_pose_cache_size", 200);
 
     this->declare_parameter("evaluation", false);
+    this->declare_parameter("use_semantic", true);
+    this->declare_parameter("scenario", 1);
 
     // Retrieve and store parameter values
     this->get_parameter("resolution", resolution_);
@@ -215,6 +232,12 @@ public:
 
     this->get_parameter("evaluation", evaluation_);
     RCLCPP_INFO(this->get_logger(), "Evaluation: %s", evaluation_ ? "active" : "inactive");
+
+    this->get_parameter("use_semantic", use_semantic_);
+    RCLCPP_INFO(this->get_logger(), "Semantic: %s", use_semantic_ ? "active" : "inactive");
+
+    this->get_parameter("scenario", scenario_);
+    RCLCPP_INFO(this->get_logger(), "Scenario: %i", scenario_);
 
     this->declare_parameter("footprint", std::vector<double>{});
     this->get_parameter("footprint", footprint_);
@@ -313,6 +336,8 @@ public:
       eval_robot_marker_ = &map_["eval_robot_marker"];
       map_.add("eval_intersect");
       eval_intersect_ = &map_["eval_intersect"];
+      map_.add("visualization");
+      visualization_ = &map_["visualization"];
     }
     total_obstacles_ = 0;
     total_intersections_ = 0;
@@ -333,10 +358,27 @@ public:
     height_estimate_ = &map_["height_estimate"];
     height_variance_ = &map_["height_variance"];
 
+    grid_map::Position position = grid_map::Position(0.0, 0.0);
+
+    switch (scenario_) {
+      case 1:
+        break;
+
+      case 2:
+        position = grid_map::Position(244.0, -138.0);
+        length_ = 15.0;
+        height_ = 15.0;
+        break;
+
+      case 3:
+        position = grid_map::Position(191.0, 27.5);
+        length_ = 17.0;
+        height_ = 11.0;
+        break;
+    }
 
     // Initialize the map
-    map_.setGeometry(grid_map::Length(length_, height_), resolution_,
-                     grid_map::Position(0.0, 0.0));
+    map_.setGeometry(grid_map::Length(length_, height_), resolution_, position);
     map_.setFrameId(map_frame_id_);
 
     for (const auto &name : class_names_) {
@@ -412,6 +454,7 @@ public:
 
     pc_updates_ = 0;
     sm_updates_ = 0;
+    robot_coverage_ = 0;
 
     // rmw_qos_profile_t qos_pose_profile{
     //   RMW_QOS_POLICY_HISTORY_KEEP_LAST,
@@ -511,7 +554,10 @@ private:
 
       double robot_x = robot_transform.transform.translation.x;
       double robot_y = robot_transform.transform.translation.y;
-      map_.move(grid_map::Position(robot_x, robot_y));
+      if(scenario_ == 0 )
+      {
+        map_.move(grid_map::Position(robot_x, robot_y));
+      }
     } catch (const tf2::TransformException &ex) {
       RCLCPP_WARN(this->get_logger(), "Transform 1 failed: %s", ex.what());
       return;
@@ -703,7 +749,7 @@ private:
           std::tuple<uint8_t, uint8_t, uint8_t> color;
           unpackRGB((*obstacle_class_)(idx(0), idx(1)), std::get<0>(color), std::get<1>(color), std::get<2>(color));
           std::string cls_name = color_to_class_[color];
-          if(cls_name != "grass" && cls_name != "dirt" && cls_name != "gravel" && cls_name != "mud" && cls_name != "water")
+          if(!use_semantic_ || (use_semantic_ && isObstacle(cls_name)))
           {
             (*obstacle_hit_count_)(idx(0), idx(1))++;
           }
@@ -839,7 +885,7 @@ private:
     {
       double angle_min = wrapTo2Pi(20.0 * (M_PI / 180.0) + yaw);
       double angle_max = wrapTo2Pi(-20.0 * (M_PI / 180.0) + yaw);
-      grid_map::Polygon sector = createAnnularSectorPolygon(3.5, clipped_range, angle_min, angle_max);
+      grid_map::Polygon sector = createAnnularSectorPolygon(2.5, clipped_range, angle_min, angle_max);
 
       for (grid_map::PolygonIterator it(map_, sector); !it.isPastEnd(); ++it) {
         grid_map::Index idx = *it;
@@ -847,6 +893,7 @@ private:
         // Process each cell inside the sector
         double prob = (*obstacle_hit_count_)(idx(0), idx(1)) > 0 ? 1.0 : 0.2;
         (*obstacle_zone_)(idx(0), idx(1)) = update_log_odds((*obstacle_zone_)(idx(0), idx(1)), prob_to_log_odds(prob));
+        (*obstacle_zone_)(idx(0), idx(1)) = std::clamp((*obstacle_zone_)(idx(0), idx(1)), log_odd_min_, log_odd_max_);
       }
     }
 
@@ -934,7 +981,7 @@ private:
 
     last_update_stamp_ = msg->header.stamp;
     auto pc_cb_time = std::chrono::steady_clock::now();
-    RCLCPP_INFO(this->get_logger(), "PC %fms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
+    RCLCPP_DEBUG(this->get_logger(), "PC %fms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
   }
 
   void semanticPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
@@ -953,7 +1000,8 @@ private:
       robot_transform = tf_buffer_.lookupTransform(map_frame_id_, robot_base_frame_id_, tf2::TimePointZero);
       double robot_x = robot_transform.transform.translation.x;
       double robot_y = robot_transform.transform.translation.y;
-      map_.move(grid_map::Position(robot_x, robot_y));
+      if(scenario_ == 0)
+        map_.move(grid_map::Position(robot_x, robot_y));
     } catch (const tf2::TransformException &ex) {
       RCLCPP_WARN(this->get_logger(), "Transform 3 failed: %s", ex.what());
       return;
@@ -1126,7 +1174,7 @@ private:
     }
 
     auto pc_cb_time = std::chrono::steady_clock::now();
-    RCLCPP_INFO(this->get_logger(), "SM %fms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
+    RCLCPP_DEBUG(this->get_logger(), "SM %fms", std::chrono::duration<double, std::milli>(pc_cb_time - timestamp).count());
 
     last_update_stamp_ = msg->header.stamp;
   }
@@ -1134,6 +1182,7 @@ private:
   void applyFilterChain() {
 
     //RCLCPP_INFO(this->get_logger(), "Enter TM Cb");
+    auto timestamp = std::chrono::steady_clock::now();
 
     RCLCPP_INFO(this->get_logger(), "PC Updates: %d, SM Updates: %d", pc_updates_, sm_updates_);
     pc_updates_ = 0;
@@ -1147,6 +1196,18 @@ private:
       if (std::isnan((*min_height_)(i))) {
         (*min_height_)(i) = (*min_height_old_)(i);
       }
+
+      // Clear obstacles where the class layer is not a obstacle class
+      // if(use_semantic_ && !std::isnan((*obstacle_class_)(i)))
+      // {
+      //   std::tuple<uint8_t, uint8_t, uint8_t> color;
+      //   unpackRGB((*obstacle_class_)(i), std::get<0>(color), std::get<1>(color), std::get<2>(color));
+      //   std::string cls_name = color_to_class_[color];
+      //   if(!isObstacle(cls_name) )
+      //   {
+      //     (*obstacle_zone_)(i) = 0;
+      //   }
+      // }
 
       // Set the obstacle layer depending on the zone value
       if((*obstacle_zone_)(i) > 0)
@@ -1174,8 +1235,9 @@ private:
 
 
     // Fill the obstacle zone
-    //markAlphaShapeObstacleClusters(map_, "obstacle_zone", 2, this->get_logger());
-    morphologicalClose(map_, "obstacle", 3, 3);
+    // markAlphaShapeObstacleClusters(map_, "obstacle", 2, this->get_logger());
+    // markAlphaShapeObstacleClusters(map_, "sky_map", 2, this->get_logger());
+    morphologicalClose(map_, "obstacle", 1, 1);
     morphologicalClose(map_, "sky_map", 4, 3);
 
     // Map Iteration (iterate over whole map)
@@ -1185,19 +1247,35 @@ private:
         const size_t i = it.getLinearIndex();
         if((*obstacle_)(i) == 1000 && (*eval_obstacle_marker_)(i) != 1.0)
         {
-          (*eval_obstacle_marker_)(i) = 1.0;
+          (*eval_obstacle_marker_)(i) = 1.0;          
+          (*visualization_)(i) = (*eval_robot_marker_)(i) == 1.0 ? packRGB(160, 0, 250) : packRGB(255, 0, 0);
           total_obstacles_++;
         }
 
-        if((*eval_obstacle_marker_)(i) == 1.0 && (*eval_robot_marker_)(i) == 1.0 && (*eval_intersect_)(i) != 1.0)
+        if((*obstacle_)(i) == 1000 && (*eval_robot_marker_)(i) == 1.0 && (*eval_intersect_)(i) != 1.0)
         {
           (*eval_intersect_)(i) = 1.0;
           total_intersections_++;
+          (*visualization_)(i) = packRGB(160, 0, 250);
+        }
+
+        if((*eval_obstacle_marker_)(i) != 1.0 && (*eval_robot_marker_)(i) != 1.0)
+        {
+          (*visualization_)(i) = packRGB(255, 255, 255);
+        }
+
+        if((*eval_intersect_)(i) == 1.0)
+        {
+          (*visualization_)(i) = packRGB(160, 0, 250);
+        }
+
+        if(std::isnan((*obstacle_class_)(i)))
+        {
+          (*obstacle_class_)(i) = packRGB(255, 255, 255);
         }
 
       }
-      RCLCPP_INFO(this->get_logger(), "Total Obstacles: %d, Total Intersections: %d", total_obstacles_, total_intersections_);
-
+      
       // Transform robot footprint to map
       geometry_msgs::msg::TransformStamped robot_transform;
       try {
@@ -1206,45 +1284,52 @@ private:
         RCLCPP_WARN(this->get_logger(), "Footprint Transform failed: %s", ex.what());
         return;
       }
-
+      
       // Extract translation
       double tx = robot_transform.transform.translation.x;
       double ty = robot_transform.transform.translation.y;
-
+      
       // Extract yaw from quaternion
       tf2::Quaternion q(
-          robot_transform.transform.rotation.x,
-          robot_transform.transform.rotation.y,
-          robot_transform.transform.rotation.z,
+        robot_transform.transform.rotation.x,
+        robot_transform.transform.rotation.y,
+        robot_transform.transform.rotation.z,
           robot_transform.transform.rotation.w
-      );
-      double roll, pitch, yaw;
-      tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
-
-      // Prepare transformed footprint
-      std::vector<std::pair<double, double>> transformed_footprint;
+        );
+        double roll, pitch, yaw;
+        tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+        
+        // Prepare transformed footprint
+        std::vector<std::pair<double, double>> transformed_footprint;
       grid_map::Polygon polygon_footprint;
       for (size_t i = 0; i < footprint_.size(); i += 2) {
-          double x = footprint_[i];
-          double y = footprint_[i + 1];
-
-          // Rotate and translate
-          double x_map = std::cos(yaw) * x - std::sin(yaw) * y + tx;
-          double y_map = std::sin(yaw) * x + std::cos(yaw) * y + ty;
-
-          transformed_footprint.emplace_back(x_map, y_map);
-          polygon_footprint.addVertex(grid_map::Position(x_map, y_map));
-          //RCLCPP_INFO(this->get_logger(), "Footprint (robot): (%.2f, %.2f) → (map): (%.2f, %.2f)", x, y, x_map, y_map);
+        double x = footprint_[i];
+        double y = footprint_[i + 1];
+        
+        // Rotate and translate
+        double x_map = std::cos(yaw) * x - std::sin(yaw) * y + tx;
+        double y_map = std::sin(yaw) * x + std::cos(yaw) * y + ty;
+        
+        transformed_footprint.emplace_back(x_map, y_map);
+        polygon_footprint.addVertex(grid_map::Position(x_map, y_map));
+        //RCLCPP_INFO(this->get_logger(), "Footprint (robot): (%.2f, %.2f) → (map): (%.2f, %.2f)", x, y, x_map, y_map);
       }
-
+      
       for (grid_map::PolygonIterator it(map_, polygon_footprint); !it.isPastEnd(); ++it) {
         grid_map::Index idx = *it;
         
         // Process each cell inside the sector
-        (*eval_robot_marker_)(idx(0), idx(1)) = 1.0;// packRGB(0, 255, 0);
+        if((*eval_robot_marker_)(idx(0), idx(1)) != 1)
+        {
+          (*eval_robot_marker_)(idx(0), idx(1)) = 1.0;// packRGB(0, 255, 0);
+          if((*eval_intersect_)(idx(0), idx(1)) != 1.0)
+          {
+            (*visualization_)(idx(0), idx(1)) = packRGB(0, 140, 250);
+          }
+          robot_coverage_++;
+        }
       }
-
-
+      RCLCPP_INFO(this->get_logger(), "Obstacles: %d,\n Intersections: %d\n Coverage: %d", total_obstacles_, total_intersections_, robot_coverage_);
     }
 
     // Measure Obstacle Zone Time
@@ -1258,9 +1343,7 @@ private:
       return;
     }
 
-    // Measure Filter Chain Time
-    //auto filter_chain_time = std::chrono::steady_clock::now();
-    //RCLCPP_DEBUG(this->get_logger(), "Filter chain took %f ms", std::chrono::duration<double, std::milli>(filter_chain_time - obstacle_zone_time).count());
+    
 
     // Copy min_height_smooth from min_height_filtered to map_
     map_["min_height_smooth"] = min_height_filtered["min_height_smooth"];
@@ -1274,8 +1357,11 @@ private:
     "ground_class",
     "obstacle_class",
     "sky_map",
-    "eval_obstacle_marker",
-    "eval_robot_marker"};
+    // "eval_obstacle_marker",
+    // "eval_intersect",
+    // "eval_robot_marker",
+    "visualization",
+    "min_height"};
 
     // Now remove unwanted layers
     for (const auto& layer : map_.getLayers()) {
@@ -1291,6 +1377,10 @@ private:
     map_["min_height_old"] = map_["min_height"];
     // map_["min_height"].setConstant(std::numeric_limits<float>::quiet_NaN());
     // map_["obstacle_zone"].setConstant(std::numeric_limits<float>::quiet_NaN());
+
+    // Measure Filter Chain Time
+    auto callback_time = std::chrono::steady_clock::now();
+    RCLCPP_INFO(this->get_logger(), "Timer Callback %f ms", std::chrono::duration<double, std::milli>(callback_time - timestamp).count());
   }
 
 };

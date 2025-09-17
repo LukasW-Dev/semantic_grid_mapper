@@ -23,8 +23,8 @@ find_package(tf2_eigen REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(Eigen3 REQUIRED)
-# find_package(CGAL REQUIRED)
-# find_package(GMP REQUIRED)
+find_package(CGAL REQUIRED)
+find_package(GMP REQUIRED)
 find_package(filters REQUIRED)
 
 include_directories(
